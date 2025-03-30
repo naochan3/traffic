@@ -485,7 +485,7 @@ section, summary, time, mark, audio, video {
             meta_pos = new_html.find('<head>') + 6 if '<head>' in new_html else 0
             if meta_pos > 0:
                 new_html = new_html[:meta_pos] + '\n<meta charset="UTF-8">\n' + new_html[meta_pos:]
-                    else:
+            else:
                 # headがない場合は先頭に追加
                 new_html = '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8">\n</head>\n<body>\n' + new_html + '\n</body>\n</html>'
         
@@ -571,7 +571,7 @@ def view(file_id):
         # ファイルパスを取得
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id + '.html')
         
-    if not os.path.exists(file_path):
+        if not os.path.exists(file_path):
             app.logger.error(f"File not found: {file_path}")
             return render_template('error.html', error="ファイルが見つかりません"), 404
         
