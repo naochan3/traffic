@@ -9,6 +9,7 @@
   from = "/*"
   to = "/.netlify/functions/app"
   status = 200
+  force = true
 
 [functions]
   directory = "netlify/functions" 
