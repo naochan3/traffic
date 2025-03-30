@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TikTok Pixel自動埋め込みツール</title>
+    <title>AfiTori</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <div class="container py-4">
-        <h1 class="text-center mb-4">TikTok Pixel自動埋め込みツール</h1>
+        <h1 class="text-center mb-4">AfiTori</h1>
         
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
@@ -37,7 +37,7 @@
                             </div>
                             <div class="mb-3">
                                 <label for="pixel_id" class="form-label">TikTok Pixel ID</label>
-                                <input type="text" class="form-control" id="pixel_id" name="pixel_id" placeholder="CPGNN73C77U3S3PJHF1G" required>
+                                <input type="text" class="form-control" id="pixel_id" name="pixel_id" placeholder="ABCDEF123456789EXAMPLE" required>
                                 <div class="form-text">TikTok広告管理画面で確認できるPixel IDを入力してください</div>
                             </div>
                             <button type="submit" class="btn btn-primary">URLを生成</button>
