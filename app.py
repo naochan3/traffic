@@ -92,14 +92,55 @@ def create():
             flash(f'URLアクセスエラー: {str(e)}', 'error')
             return redirect(url_for('index'))
         
-        # TikTok Pixelスクリプトの作成
-        pixel_script = f'''
+        # スクリプト隔離用のiframeを使うかどうかの判定
+        use_iframe = 'true' == request.form.get('use_iframe', 'false')
+        
+        if use_iframe:
+            # iframeを使ってTikTok Pixelを隔離する方法
+            pixel_script = f'''
+<!-- TikTok Pixel (iframe隔離版) -->
+<iframe id="tiktok-pixel-iframe" style="display:none;width:0;height:0;border:0;border:none;" 
+        title="TikTok Pixel"></iframe>
 <script>
+// ページ読み込み完了後に実行
+window.addEventListener('load', function() {{
+    // iframeへのアクセス
+    var iframe = document.getElementById('tiktok-pixel-iframe');
+    var iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+    
+    // iframeのドキュメントを初期化
+    iframeDoc.open();
+    iframeDoc.write(`
+        <html>
+        <head>
+            <script>
+            !function (w, d, t) {{
+                w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}},ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
+                
+                ttq.load('{pixel_id}');
+                ttq.page();
+            }}(window, document, 'ttq');
+            <\/script>
+        </head>
+        <body></body>
+        </html>
+    `);
+    iframeDoc.close();
+}});
+</script>
+'''
+        else:
+            # 通常の遅延読み込み方式
+            pixel_script = f'''
+<!-- TikTok Pixel (遅延読み込み版) -->
+<script type="text/javascript" defer async>
 !function (w, d, t) {{{{
-  w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{{{t[e]=function(){{{{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}}}}}}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{{{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}}}},ttq.load=function(e,n){{{{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}}}};
+  window.addEventListener('load', function() {{{{
+    w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{{{t[e]=function(){{{{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}}}}}}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{{{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}}}},ttq.load=function(e,n){{{{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}}}};
 
-  ttq.load('{pixel_id}');
-  ttq.page();
+    ttq.load('{pixel_id}');
+    ttq.page();
+  }});
 }}}}(window, document, 'ttq');
 </script>
 '''
