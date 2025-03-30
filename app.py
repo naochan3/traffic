@@ -118,99 +118,118 @@ def create():
             # iframeを使ってTikTok Pixelを隔離する方法 - CORSエラー修正対応
             pixel_script = f'''
 <!-- TikTok Pixel (iframe隔離版 - セキュリティ改善) -->
-<script>
-// ページの読み込みが完了した後にスクリプトを実行
-window.addEventListener('DOMContentLoaded', function() {{
-    // TikTok Pixelを含む非表示div要素を作成
-    var pixelContainer = document.createElement('div');
-    pixelContainer.id = 'tt-pixel-container';
-    pixelContainer.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;visibility:hidden;display:none;';
-    
-    // ピクセルコードを実行するスクリプト要素
-    var pixelScript = document.createElement('script');
-    pixelScript.type = 'text/javascript';
-    pixelScript.innerHTML = `
+<script type="text/javascript">
+// ページの完全読み込み後にTikTokスクリプトを実行（遅延実行による競合防止）
+window.addEventListener('load', function() {{
+    setTimeout(function() {{
         try {{
-            !function (w, d, t) {{
-                w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}},ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
-
-                ttq.load('{pixel_id}');
-                ttq.page();
-            }}(window, document, 'ttq');
-        }} catch(err) {{
-            console.error('TikTok Pixel実行エラー:', err);
-        }}
-    `;
-    
-    // コンテナにスクリプトを追加
-    pixelContainer.appendChild(pixelScript);
-    
-    // bodyの最後に追加
-    if (document.body) {{
-        document.body.appendChild(pixelContainer);
-    }} else {{
-        // bodyがまだない場合は遅延実行
-        window.addEventListener('load', function() {{
+            // メインのDOM操作やアニメーションが完了するまで待機
+            var pixelContainer = document.createElement('div');
+            pixelContainer.id = 'tiktok-pixel-container';
+            pixelContainer.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;visibility:hidden;display:none;';
+            
+            // スクリプトをiframe内に隔離して実行
+            var iframe = document.createElement('iframe');
+            iframe.title = "TikTok Pixel";
+            iframe.style.cssText = 'width:1px;height:1px;position:absolute;display:none;';
+            iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+            
+            // pixelコンテナにiframeを追加
+            pixelContainer.appendChild(iframe);
             document.body.appendChild(pixelContainer);
-        }});
-    }}
+            
+            // iframe内にTikTokスクリプトを埋め込み
+            var iframeDoc = iframe.contentWindow.document;
+            iframeDoc.open();
+            iframeDoc.write(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="UTF-8">
+                    <script>
+                        try {{
+                            !function (w, d, t) {{
+                                w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"];
+                                ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};
+                                for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);
+                                ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}};
+                                ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
+                            
+                                ttq.load('{pixel_id}');
+                                ttq.page();
+                            }}(window, document, 'ttq');
+                        }} catch(err) {{
+                            console.error('TikTok Pixel実行エラー (隔離モード):', err);
+                        }}
+                    </script>
+                </head>
+                <body></body>
+                </html>
+            `);
+            iframeDoc.close();
+        }} catch(err) {{
+            console.error('TikTok Pixel設定エラー:', err);
+        }}
+    }}, 2000); // ページロード後2秒待機してから実行
 }});
 </script>
 '''
         else:
-            # 通常の遅延読み込み方式 (CSS分離対策付き)
+            # 通常の遅延読み込み方式 (改良版 - JavaScriptとCSSの衝突防止)
             pixel_script = f'''
-<!-- TikTok Pixel (遅延読み込み版) -->
-<style>
-/* TikTok Pixelのコンテナを非表示にする */
-#tt-pixel-container {{
-    position: absolute !important;
-    width: 1px !important;
-    height: 1px !important;
-    overflow: hidden !important;
-    clip: rect(0,0,0,0) !important;
-    white-space: nowrap !important;
-    border: 0 !important;
-    padding: 0 !important;
-    margin: -1px !important;
-    visibility: hidden !important;
-    display: none !important;
-}}
-</style>
-<script>
-// ページの読み込みが完了した後にスクリプトを実行
-window.addEventListener('DOMContentLoaded', function() {{
-    // TikTok Pixelを含む非表示div要素を作成
-    var pixelContainer = document.createElement('div');
-    pixelContainer.id = 'tt-pixel-container';
-    
-    // ピクセルコードを実行するスクリプト要素
-    var pixelScript = document.createElement('script');
-    pixelScript.type = 'text/javascript';
-    pixelScript.innerHTML = `
+<!-- TikTok Pixel (改良版遅延読み込み) -->
+<script type="text/javascript">
+// 本スクリプトはページ読み込み完了後のみ実行し、サイトのパフォーマンスに影響を与えないようにします
+window.addEventListener('load', function() {{
+    // メインコンテンツ読み込み完了後に遅延実行
+    setTimeout(function() {{
         try {{
-            !function (w, d, t) {{
-                w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}},ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
-
-                ttq.load('{pixel_id}');
-                ttq.page();
-            }}(window, document, 'ttq');
+            // 隔離コンテナを作成
+            var pixelContainer = document.createElement('div');
+            pixelContainer.id = 'tiktok-pixel-container';
+            pixelContainer.setAttribute('aria-hidden', 'true');
+            pixelContainer.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;visibility:hidden;display:none;';
+            
+            // 非同期スクリプト要素を作成
+            var pixelScript = document.createElement('script');
+            pixelScript.type = 'text/javascript';
+            pixelScript.async = true;
+            
+            // 独立したスコープでピクセルコードを実行
+            pixelScript.innerHTML = `
+                (function(w, d, t) {{
+                    try {{
+                        w.TiktokAnalyticsObject=t;
+                        var ttq=w[t]=w[t]||[];
+                        ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"];
+                        ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};
+                        for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);
+                        ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}};
+                        ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
+                    
+                        ttq.load('{pixel_id}');
+                        ttq.page();
+                    }} catch(err) {{
+                        console.error('TikTok Pixel実行エラー:', err);
+                    }}
+                }})(window, document, 'ttq');
+            `;
+            
+            // DOM操作の隔離
+            pixelContainer.appendChild(pixelScript);
+            
+            // 安全にDOMに追加 (ブロッキングしないよう非同期で)
+            if (document.body) {{
+                document.body.appendChild(pixelContainer);
+            }} else {{
+                document.addEventListener('DOMContentLoaded', function() {{
+                    document.body.appendChild(pixelContainer);
+                }});
+            }}
         }} catch(err) {{
-            console.error('TikTok Pixel実行エラー:', err);
+            console.error('TikTok Pixel設定エラー:', err);
         }}
-    `;
-    
-    // コンテナにスクリプトを追加
-    pixelContainer.appendChild(pixelScript);
-    
-    // 安全にDOMに追加
-    if (document.body) {{
-        document.body.appendChild(pixelContainer);
-    }} else {{
-        window.addEventListener('load', function() {{
-            document.body.appendChild(pixelContainer);
-        }});
-    }}
+    }}, 2000); // 2秒遅延でサイトのメイン機能を妨げない
 }});
 </script>
 '''
@@ -235,7 +254,33 @@ window.addEventListener('DOMContentLoaded', function() {{
         # <head>タグを探してその終了直前にメタデータとピクセルスクリプトを挿入
         head_end_pos = html_content.find("</head>")
         if head_end_pos > 0:
-            new_html = html_content[:head_end_pos] + base_href + metadata_script + pixel_script + html_content[head_end_pos:]
+            # CSSリセットを追加（TikTokスクリプトがサイトのCSSに影響しないようにする）
+            css_reset = '''
+<!-- TikTok Pixel用スタイル分離 -->
+<style id="tiktok-pixel-isolation">
+/* TikTok Pixel用の隔離スタイル - メインページのスタイルに影響しないよう隔離 */
+#tiktok-pixel-container,
+iframe[title="TikTok Pixel"],
+.ttq-loading, .ttq-confirm, .ttq-pixel-base, .ttq-transport-frame {
+    all: initial !important;
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+    display: none !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    z-index: -9999 !important;
+}
+</style>
+'''
+            new_html = html_content[:head_end_pos] + base_href + metadata_script + css_reset + pixel_script + html_content[head_end_pos:]
         else:
             # headタグが見つからない場合の処理
             head_start_pos = html_content.find("<head")
@@ -243,9 +288,34 @@ window.addEventListener('DOMContentLoaded', function() {{
                 head_start_end = html_content.find(">", head_start_pos)
                 if head_start_end > 0:
                     insert_pos = head_start_end + 1
+                    # CSSリセットを追加
+                    css_reset = '''
+<!-- TikTok Pixel用スタイル分離 -->
+<style id="tiktok-pixel-isolation">
+/* TikTok Pixel用の隔離スタイル - メインページのスタイルに影響しないよう隔離 */
+#tiktok-pixel-container,
+iframe[title="TikTok Pixel"],
+.ttq-loading, .ttq-confirm, .ttq-pixel-base, .ttq-transport-frame {
+    all: initial !important;
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+    display: none !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    z-index: -9999 !important;
+}
+</style>
+'''
                     # 相対パスをコメントに記録
-                    base_href = f'<!-- 元のURL: {original_url} -->'
-                    new_html = html_content[:insert_pos] + base_href + metadata_script + pixel_script + html_content[insert_pos:]
+                    new_html = html_content[:insert_pos] + "<head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + css_reset + pixel_script + "</head>" + html_content[insert_pos:]
                 else:
                     # HTMLタグを探してその直後に挿入
                     html_pos = html_content.find("<html")
@@ -253,17 +323,121 @@ window.addEventListener('DOMContentLoaded', function() {{
                         html_end = html_content.find(">", html_pos)
                         if html_end > 0:
                             insert_pos = html_end + 1
+                            # CSSリセットを追加
+                            css_reset = '''
+<!-- TikTok Pixel用スタイル分離 -->
+<style id="tiktok-pixel-isolation">
+/* TikTok Pixel用の隔離スタイル - メインページのスタイルに影響しないよう隔離 */
+#tiktok-pixel-container,
+iframe[title="TikTok Pixel"],
+.ttq-loading, .ttq-confirm, .ttq-pixel-base, .ttq-transport-frame {
+    all: initial !important;
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+    display: none !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    z-index: -9999 !important;
+}
+</style>
+'''
                             # 相対パスをコメントに記録
-                            new_html = html_content[:insert_pos] + "<head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + pixel_script + "</head>" + html_content[insert_pos:]
+                            new_html = html_content[:insert_pos] + "<head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + css_reset + pixel_script + "</head>" + html_content[insert_pos:]
                         else:
                             # HTMLタグもない場合は先頭に挿入
-                            new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + pixel_script + "</head>" + html_content
+                            # CSSリセットを追加
+                            css_reset = '''
+<!-- TikTok Pixel用スタイル分離 -->
+<style id="tiktok-pixel-isolation">
+/* TikTok Pixel用の隔離スタイル - メインページのスタイルに影響しないよう隔離 */
+#tiktok-pixel-container,
+iframe[title="TikTok Pixel"],
+.ttq-loading, .ttq-confirm, .ttq-pixel-base, .ttq-transport-frame {
+    all: initial !important;
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+    display: none !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    z-index: -9999 !important;
+}
+</style>
+'''
+                            new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + css_reset + pixel_script + "</head>" + html_content
                     else:
                         # HTMLタグもない場合は先頭に挿入
-                        new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + pixel_script + "</head>" + html_content
+                        # CSSリセットを追加
+                        css_reset = '''
+<!-- TikTok Pixel用スタイル分離 -->
+<style id="tiktok-pixel-isolation">
+/* TikTok Pixel用の隔離スタイル - メインページのスタイルに影響しないよう隔離 */
+#tiktok-pixel-container,
+iframe[title="TikTok Pixel"],
+.ttq-loading, .ttq-confirm, .ttq-pixel-base, .ttq-transport-frame {
+    all: initial !important;
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+    display: none !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    z-index: -9999 !important;
+}
+</style>
+'''
+                        new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + css_reset + pixel_script + "</head>" + html_content
             else:
                 # headタグがない場合は先頭に挿入
-                new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + pixel_script + "</head>" + html_content
+                # CSSリセットを追加
+                css_reset = '''
+<!-- TikTok Pixel用スタイル分離 -->
+<style id="tiktok-pixel-isolation">
+/* TikTok Pixel用の隔離スタイル - メインページのスタイルに影響しないよう隔離 */
+#tiktok-pixel-container,
+iframe[title="TikTok Pixel"],
+.ttq-loading, .ttq-confirm, .ttq-pixel-base, .ttq-transport-frame {
+    all: initial !important;
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+    display: none !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    z-index: -9999 !important;
+}
+</style>
+'''
+                new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + css_reset + pixel_script + "</head>" + html_content
         
         # 修正したHTMLを保存する前に相対パスを絶対パスに変換
         new_html = fix_relative_paths(new_html, base_domain, original_url)
@@ -280,40 +454,63 @@ window.addEventListener('DOMContentLoaded', function() {{
                 head_pos = new_html.find('<head')
                 head_end = new_html.find('>', head_pos) + 1
                 
-                # CSSリセットとメタタグを追加
+                # CSSリセットとメタタグを追加（リンターエラー修正）
                 reset_css = '''<meta charset="UTF-8">
 <!-- TikTok Pixel用スタイル隔離 -->
 <style id="tiktok-pixel-reset">
 /* TikTok Pixelが元のページスタイルに影響しないようにするリセット */
-#tiktok-pixel-container, iframe[title="TikTok Pixel"] {
+#tiktok-pixel-container, 
+iframe[title="TikTok Pixel"],
+.ttq-loading, .ttq-confirm, .ttq-pixel-base, 
+iframe.ttq-transport-frame {
+    /* 最も強力な非表示・隔離設定 */
     display: none !important;
+    position: absolute !important;
     width: 0 !important;
     height: 0 !important;
-    position: absolute !important;
-    left: -9999px !important;
-    top: -9999px !important;
     opacity: 0 !important;
     visibility: hidden !important;
-    overflow: hidden !important;
     pointer-events: none !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    clip-path: inset(50%) !important;
+    margin: -1px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    max-width: 0 !important;
+    max-height: 0 !important;
+    z-index: -9999 !important;
 }
 
-/* 保護スタイル - オリジナルコンテンツのスタイルが維持されるように特定のTikTokスタイルだけを上書き */
-/* ttqが挿入する可能性のあるスタイルを選択的に無効化 */
-html body div.ttq-loading, 
-html body div.ttq-confirm,
-html body div.ttq-pixel-base,
-html body iframe.ttq-transport-frame {
-    display: none !important;
-    width: 0 !important;
-    height: 0 !important;
-    position: absolute !important;
-    left: -9999px !important;
-    top: -9999px !important;
-    opacity: 0 !important;
-    visibility: hidden !important;
-    overflow: hidden !important;
-    pointer-events: none !important;
+/* JS実行を妨げないがCSSは隔離 - スタイルの競合を防ぐ */
+#tiktok-pixel-container *, 
+iframe[title="TikTok Pixel"] *,
+.ttq-loading *, .ttq-confirm *,
+.ttq-pixel-base *, 
+iframe.ttq-transport-frame * {
+    all: initial !important;
+    contain: strict !important;
+}
+
+/* アニメーションとトランジションが干渉しないように */
+html, body {
+    animation-play-state: running !important;
+    transition-delay: 0s !important;
+    transition-duration: 0s !important;
+}
+
+/* TikTok Pixel関連のスタイルに対する上書き（メインページへの影響をブロック） */
+@keyframes none-ttq {
+    from { opacity: 0; }
+    to { opacity: 0; }
+}
+
+/* TikTokスクリプトにより追加される可能性のあるすべてのアニメーション効果を無効化 */
+[class*="ttq-"], [id*="ttq-"], 
+[class*="tiktok-"], [id*="tiktok-"] {
+    animation: none-ttq 0s !important;
+    transition: none !important;
+    transform: none !important;
 }
 </style>'''
                 
@@ -334,7 +531,7 @@ html body iframe.ttq-transport-frame {
                 new_html = new_html[:html_end] + f'<head>{reset_css}</head>' + new_html[html_end:]
         elif '<!DOCTYPE' not in new_html and '<html' not in new_html:
             # HTMLフォーマットでない場合は基本的なHTML構造で囲む
-            new_html = f'''<!DOCTYPE html>
+            formatted_html = f'''<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
@@ -343,43 +540,68 @@ html body iframe.ttq-transport-frame {
 <!-- TikTok Pixel用スタイル隔離 -->
 <style id="tiktok-pixel-reset">
 /* TikTok Pixelが元のページスタイルに影響しないようにするリセット */
-#tiktok-pixel-container, iframe[title="TikTok Pixel"] {
+#tiktok-pixel-container, 
+iframe[title="TikTok Pixel"],
+.ttq-loading, .ttq-confirm, .ttq-pixel-base, 
+iframe.ttq-transport-frame {{
+    /* 最も強力な非表示・隔離設定 */
     display: none !important;
+    position: absolute !important;
     width: 0 !important;
     height: 0 !important;
-    position: absolute !important;
-    left: -9999px !important;
-    top: -9999px !important;
     opacity: 0 !important;
     visibility: hidden !important;
-    overflow: hidden !important;
     pointer-events: none !important;
-}
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    clip-path: inset(50%) !important;
+    margin: -1px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    max-width: 0 !important;
+    max-height: 0 !important;
+    z-index: -9999 !important;
+}}
 
-/* 保護スタイル - オリジナルコンテンツのスタイルが維持されるように特定のTikTokスタイルだけを上書き */
-/* ttqが挿入する可能性のあるスタイルを選択的に無効化 */
-html body div.ttq-loading, 
-html body div.ttq-confirm,
-html body div.ttq-pixel-base,
-html body iframe.ttq-transport-frame {
-    display: none !important;
-    width: 0 !important;
-    height: 0 !important;
-    position: absolute !important;
-    left: -9999px !important;
-    top: -9999px !important;
-    opacity: 0 !important;
-    visibility: hidden !important;
-    overflow: hidden !important;
-    pointer-events: none !important;
-}
+/* JS実行を妨げないがCSSは隔離 - スタイルの競合を防ぐ */
+#tiktok-pixel-container *, 
+iframe[title="TikTok Pixel"] *,
+.ttq-loading *, .ttq-confirm *,
+.ttq-pixel-base *, 
+iframe.ttq-transport-frame * {{
+    all: initial !important;
+    contain: strict !important;
+}}
+
+/* アニメーションとトランジションが干渉しないように */
+html, body {{
+    animation-play-state: running !important;
+    transition-delay: 0s !important;
+    transition-duration: 0s !important;
+}}
+
+/* TikTok Pixel関連のスタイルに対する上書き（メインページへの影響をブロック） */
+@keyframes none-ttq {{
+    from {{ opacity: 0; }}
+    to {{ opacity: 0; }}
+}}
+
+/* TikTokスクリプトにより追加される可能性のあるすべてのアニメーション効果を無効化 */
+[class*="ttq-"], [id*="ttq-"], 
+[class*="tiktok-"], [id*="tiktok-"] {{
+    animation: none-ttq 0s !important;
+    transition: none !important;
+    transform: none !important;
+}}
 </style>
+{pixel_script}
 <title>Redirected Content</title>
 </head>
 <body>
-{new_html}
+{html_content}
 </body>
 </html>'''
+            new_html = formatted_html
         
         # 修正したHTMLを保存
         with open(file_path, 'w', encoding='utf-8') as f:
