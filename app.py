@@ -92,8 +92,13 @@ def create():
             flash(f'URLアクセスエラー: {str(e)}', 'error')
             return redirect(url_for('index'))
         
-        # HTMLの解析
-        soup = BeautifulSoup(html_content, 'html.parser')
+        # HTMLの解析 - より堅牢なhtml5libパーサーを使用
+        # html5libが必要なのでrequirements.txtに追加する必要があります
+        try:
+            soup = BeautifulSoup(html_content, 'html5lib')
+        except:
+            # もしhtml5libがインストールされていない場合はデフォルトに戻す
+            soup = BeautifulSoup(html_content, 'html.parser')
         
         # TikTok Pixelスクリプトの作成
         pixel_script = f'''
@@ -110,12 +115,26 @@ def create():
         # headタグがない場合は作成
         if not soup.head:
             head = soup.new_tag('head')
+            # エンコーディングメタタグを追加
+            meta_charset = soup.new_tag('meta')
+            meta_charset['charset'] = 'utf-8'
+            head.append(meta_charset)
+            
             if soup.html:
                 soup.html.insert(0, head)
             else:
                 html = soup.new_tag('html')
                 html.append(head)
                 soup.append(html)
+        else:
+            # 既存のheadタグに文字コードメタタグがなければ追加
+            meta_charset = soup.head.find('meta', charset=True)
+            meta_content_type = soup.head.find('meta', {'http-equiv': 'Content-Type'})
+            
+            if not meta_charset and not meta_content_type:
+                meta_charset = soup.new_tag('meta')
+                meta_charset['charset'] = 'utf-8'
+                soup.head.insert(0, meta_charset)
         
         # Pixelスクリプトを挿入
         new_script = BeautifulSoup(pixel_script, 'html.parser')
@@ -128,7 +147,7 @@ def create():
         
         # 修正したHTMLを保存
         with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(str(soup))
+            f.write('<!DOCTYPE html>\n' + str(soup))
         
         # URLリストに追加
         url_list = get_url_list()
