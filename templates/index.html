@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TikTok Pixel自動埋め込みツール</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container py-4">
+        <h1 class="text-center mb-4">TikTok Pixel自動埋め込みツール</h1>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        <div class="row">
+            <div class="col-md-6 mb-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title h5 m-0">新しいURLを作成</h2>
+                    </div>
+                    <div class="card-body">
+                        <form action="{{ url_for('create') }}" method="post">
+                            <div class="mb-3">
+                                <label for="original_url" class="form-label">オリジナルURL</label>
+                                <input type="url" class="form-control" id="original_url" name="original_url" placeholder="https://example.com" required>
+                                <div class="form-text">TikTok Pixelを埋め込みたいURLを入力してください</div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="pixel_id" class="form-label">TikTok Pixel ID</label>
+                                <input type="text" class="form-control" id="pixel_id" name="pixel_id" placeholder="CPGNN73C77U3S3PJHF1G" required>
+                                <div class="form-text">TikTok広告管理画面で確認できるPixel IDを入力してください</div>
+                            </div>
+                            <button type="submit" class="btn btn-primary">URLを生成</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title h5 m-0">生成されたURL一覧</h2>
+                    </div>
+                    <div class="card-body">
+                        {% if url_list %}
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>オリジナルURL</th>
+                                            <th>Pixel ID</th>
+                                            <th>生成URL</th>
+                                            <th>作成日時</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for url in url_list %}
+                                            <tr>
+                                                <td>
+                                                    <a href="{{ url.original_url }}" target="_blank" class="text-truncate d-inline-block" style="max-width: 150px;" title="{{ url.original_url }}">
+                                                        {{ url.original_url }}
+                                                    </a>
+                                                </td>
+                                                <td>{{ url.pixel_id }}</td>
+                                                <td>
+                                                    <a href="{{ url.new_url }}" target="_blank" class="btn btn-sm btn-outline-primary">
+                                                        表示
+                                                    </a>
+                                                    <button class="btn btn-sm btn-outline-secondary copy-btn" data-url="{{ url.full_url if url.full_url else (request.host_url[:-1] + url.new_url) }}">
+                                                        コピー
+                                                    </button>
+                                                </td>
+                                                <td>{{ url.created_at }}</td>
+                                                <td>
+                                                    <form action="{{ url_for('delete', file_id=url.id) }}" method="post" onsubmit="return confirm('このURLを削除してもよろしいですか？');">
+                                                        <button type="submit" class="btn btn-sm btn-danger">削除</button>
+                                                    </form>
+                                                </td>
+                                            </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        {% else %}
+                            <p class="text-center">生成されたURLはまだありません。</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // URLコピー機能
+        document.querySelectorAll('.copy-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                const url = this.getAttribute('data-url');
+                navigator.clipboard.writeText(url).then(() => {
+                    const originalText = this.textContent;
+                    this.textContent = 'コピー完了!';
+                    this.classList.remove('btn-outline-secondary');
+                    this.classList.add('btn-success');
+                    
+                    setTimeout(() => {
+                        this.textContent = originalText;
+                        this.classList.remove('btn-success');
+                        this.classList.add('btn-outline-secondary');
+                    }, 2000);
+                });
+            });
+        });
+    </script>
+</body>
+</html> 
