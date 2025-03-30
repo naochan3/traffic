@@ -256,6 +256,9 @@ window.addEventListener('DOMContentLoaded', function() {{
 </script>
 """.format(original_url, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), urlparse(original_url).scheme, urlparse(original_url).netloc)
         
+        # 元のURLをコメントとして記録
+        base_href = f'<!-- 元のURL: {original_url} -->'
+        
         # <head>タグを探してその終了直前にメタデータとピクセルスクリプトを挿入
         head_end_pos = html_content.find("</head>")
         if head_end_pos > 0:
