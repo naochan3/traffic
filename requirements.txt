@@ -1,4 +1,5 @@
 flask==2.3.3
 beautifulsoup4==4.12.2
 requests==2.31.0
-gunicorn==20.1.0 
+gunicorn==20.1.0
+flask-serverless==0.1.4 
