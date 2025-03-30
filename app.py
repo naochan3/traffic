@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, make_response
 import os
 import requests
 from bs4 import BeautifulSoup
@@ -677,21 +677,116 @@ html, body {{
         return redirect(url_for('index'))
 
 @app.route('/view/<file_id>')
-@cache.cached(timeout=3600, query_string=True)  # キャッシュを1時間に設定
 def view(file_id):
-    file_path = os.path.join(URLS_DIR, f"{file_id}.html")
-    if not os.path.exists(file_path):
-        return "ファイルが見つかりません", 404
-    
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+        # 設定情報を取得
+        config = get_config()
         
-        # Content-Typeヘッダーでエンコーディングを明示的に指定
-        return content, 200, {'Content-Type': 'text/html; charset=utf-8'}
+        # クリック計測用に現在時刻をユニークIDで生成する
+        # これにより、新しいセッションでのキャッシュ問題を回避する
+        current_time = int(time.time())
+        unique_id = f"{file_id}_{current_time}"
+        
+        # URLステータスチェック (有効期限、クリック数制限など)
+        url_list = get_url_list()
+        target_url = None
+        
+        for url in url_list:
+            if url.get('id') == file_id:
+                target_url = url
+                break
+        
+        if not target_url:
+            # URLが見つからない場合
+            app.logger.info(f"URL not found: {file_id}")
+            return render_template('error.html', error="指定されたURLは存在しません"), 404
+        
+        # ファイルパスを取得
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id + '.html')
+        
+        if not os.path.exists(file_path):
+            app.logger.error(f"File not found: {file_path}")
+            return render_template('error.html', error="ファイルが見つかりません"), 404
+            
+        # HTMLファイルの内容を読み込む
+        with open(file_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        
+        # オリジナルURLを取得
+        original_url = target_url.get('url', '')
+        parsed_url = urlparse(original_url)
+        base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        
+        # 相対パスを絶対パスに変換
+        html_content = fix_relative_paths(html_content, base_domain, original_url)
+        
+        # TikTokピクセル用のスクリプト
+        tiktok_pixel_script = f"""
+<script>
+(function() {{
+    // TikTokピクセルコードの実行を行う関数
+    function injectTikTokPixel() {{
+        try {{
+            // インラインでスクリプトタグを作成して挿入
+            var script = document.createElement('script');
+            script.innerHTML = `
+                !function (w, d, t) {{
+                    w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}};ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
+                    ttq.load('CM0EQKBC77U7DDDCEF4G');
+                    ttq.page();
+                }}(window, document, 'ttq');
+            `;
+            document.head.appendChild(script);
+            console.log('[TikTok]: ピクセル設定完了');
+        }} catch(err) {{
+            // エラーを非表示にして、メインページに影響を与えないようにする
+            console.error('[TikTok]: Pixel設定エラー', err);
+        }}
+    }}
+
+    // ページの読み込みステータスに応じた実行タイミング制御
+    if (document.readyState === 'complete') {{
+        // すでにページが読み込み完了している場合
+        setTimeout(injectTikTokPixel, 2000);
+    }} else {{
+        // ページ読み込み完了後に実行
+        window.addEventListener('load', function() {{
+            setTimeout(injectTikTokPixel, 2000);
+        }});
+    }}
+}})();
+</script>
+        """
+        
+        # YouTubeの場合は表示をそのまま返す
+        if target_url.get('youtube'):
+            return html_content
+        
+        # TikTokピクセルコードをheadタグに追加
+        head_end_pos = html_content.find('</head>')
+        if head_end_pos != -1:
+            html_content = html_content[:head_end_pos] + tiktok_pixel_script + html_content[head_end_pos:]
+        else:
+            # headタグがない場合はbodyタグの直後に挿入
+            body_start_pos = html_content.find('<body')
+            if body_start_pos != -1:
+                body_end_bracket = html_content.find('>', body_start_pos)
+                if body_end_bracket != -1:
+                    html_content = html_content[:body_end_bracket + 1] + tiktok_pixel_script + html_content[body_end_bracket + 1:]
+            else:
+                # どちらもない場合はHTMLの先頭に追加
+                html_content = tiktok_pixel_script + html_content
+        
+        # クリック数を更新
+        update_click_count(file_id)
+        
+        # レスポンスを返す
+        response = make_response(html_content)
+        response.headers['Content-Type'] = 'text/html'
+        return response
     except Exception as e:
         app.logger.error(f"ファイル読み込みエラー: {str(e)}")
-        return "ファイルの読み込み中にエラーが発生しました", 500
+        return render_template('error.html', error="ファイルの読み込み中にエラーが発生しました"), 500
 
 @app.route('/delete/<file_id>', methods=['POST'])
 def delete(file_id):
@@ -832,7 +927,7 @@ def fix_relative_paths(html_content, base_domain, original_url):
             patterns = [
                 (r'(src|href)=[\'"](?!(?:http|https|data|#|javascript|mailto))([^\'"]+)[\'"]', r'\1="' + original_url + r'\2"'),
                 (r'(src|href)=[\'"]//([^\'"]+)[\'"]', r'\1="https://\2"'),
-                (r'url\([\'"]?(?!(?:http|https|data|#))([^\)]+?)[\'"]?\)', r'url(' + original_url + r'\1)'),
+                (r'url\([\'"]?((?!(?:http|https|data|#))([^\)\'"\s]+))[\'"]?\)', r'url(' + original_url + r'\1)'),
                 (r'url\([\'"]?//([^\)]+?)[\'"]?\)', r'url(https://\1)')
             ]
             
