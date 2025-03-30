@@ -1,15 +1,16 @@
-body {
+/* アプリケーション固有のスタイル - TikTok Pixelとの競合を避けるため高い特異性を持たせる */
+body.afitori-app {
     background-color: #f8f9fa;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     line-height: 1.5;
 }
 
-.container {
+.afitori-app .container {
     max-width: 1200px;
     padding: 1rem;
 }
 
-.card {
+.afitori-app .card {
     box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
     border-radius: 0.5rem;
     overflow: hidden;
@@ -17,31 +18,31 @@ body {
     margin-bottom: 1.5rem;
 }
 
-.card:hover {
+.afitori-app .card:hover {
     transform: translateY(-2px);
     box-shadow: 0 0.25rem 0.5rem rgba(0, 0, 0, 0.1);
 }
 
-.card-header {
+.afitori-app .card-header {
     background-color: #f8f9fa;
     border-bottom: 1px solid rgba(0, 0, 0, 0.125);
     padding: 0.75rem 1rem;
 }
 
-.card-body {
+.afitori-app .card-body {
     padding: 1.25rem;
 }
 
-.table th {
+.afitori-app .table th {
     font-weight: 600;
     vertical-align: middle;
 }
 
-.table td {
+.afitori-app .table td {
     vertical-align: middle;
 }
 
-.text-truncate {
+.afitori-app .text-truncate {
     max-width: 150px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -49,40 +50,57 @@ body {
     display: inline-block;
 }
 
-.btn {
+.afitori-app .btn {
     transition: all 0.2s;
 }
 
-.btn-primary {
+.afitori-app .btn-primary {
     background-color: #0d6efd;
     border-color: #0d6efd;
 }
 
-.btn-primary:hover {
+.afitori-app .btn-primary:hover {
     background-color: #0b5ed7;
     border-color: #0a58ca;
 }
 
-.alert {
+.afitori-app .alert {
     margin-bottom: 1.5rem;
 }
 
 /* レスポンシブ調整 */
 @media (max-width: 768px) {
-    .table th, .table td {
+    .afitori-app .table th, 
+    .afitori-app .table td {
         font-size: 0.875rem;
     }
     
-    .btn-sm {
+    .afitori-app .btn-sm {
         padding: 0.25rem 0.4rem;
         font-size: 0.75rem;
     }
 
-    .card-title {
+    .afitori-app .card-title {
         font-size: 1.25rem;
     }
 
-    .container {
+    .afitori-app .container {
         padding: 0.5rem;
     }
+}
+
+/* TikTok Pixel競合防止スタイル - embedされたページが影響されることを防ぐ */
+iframe[title="TikTok Pixel"],
+#tiktok-pixel-container,
+#tiktok-pixel-isolation {
+    display: none !important;
+    visibility: hidden !important;
+    width: 0 !important;
+    height: 0 !important;
+    opacity: 0 !important;
+    position: absolute !important;
+    left: -9999px !important;
+    top: -9999px !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
 } 

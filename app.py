@@ -111,8 +111,8 @@ def create():
             # iframeを使ってTikTok Pixelを隔離する方法
             pixel_script = f'''
 <!-- TikTok Pixel (iframe隔離版) -->
-<iframe id="tiktok-pixel-iframe" style="display:none;width:0;height:0;border:0;border:none;" 
-        title="TikTok Pixel"></iframe>
+<iframe id="tiktok-pixel-iframe" style="display:none;width:0;height:0;border:0;border:none;position:absolute;left:-9999px;" 
+        title="TikTok Pixel" sandbox="allow-scripts"></iframe>
 <script>
 // ページ読み込み完了後に実行
 window.addEventListener('load', function() {{
@@ -125,6 +125,23 @@ window.addEventListener('load', function() {{
     iframeDoc.write(`
         <html>
         <head>
+            <meta charset="UTF-8">
+            <style>
+            /* リセットCSS - 親ページのスタイルに影響を与えないようにリセット */
+            html, body, div, span, applet, object, iframe, h1, h2, h3, h4, h5, h6, p, blockquote, pre, a, 
+            abbr, acronym, address, big, cite, code, del, dfn, em, img, ins, kbd, q, s, samp, small, 
+            strike, strong, sub, sup, tt, var, b, u, i, center, dl, dt, dd, ol, ul, li, fieldset, form, 
+            label, legend, table, caption, tbody, tfoot, thead, tr, th, td, article, aside, canvas, 
+            details, embed, figure, figcaption, footer, header, hgroup, menu, nav, output, ruby, section, 
+            summary, time, mark, audio, video {{
+                margin: 0;
+                padding: 0;
+                border: 0;
+                font-size: 100%;
+                font: inherit;
+                vertical-align: baseline;
+            }}
+            </style>
             <script>
             !function (w, d, t) {{
                 w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}},ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
@@ -142,9 +159,24 @@ window.addEventListener('load', function() {{
 </script>
 '''
         else:
-            # 通常の遅延読み込み方式
+            # 通常の遅延読み込み方式 (CSS分離対策付き)
             pixel_script = f'''
 <!-- TikTok Pixel (遅延読み込み版) -->
+<style id="tiktok-pixel-isolation">
+/* TikTok Pixelによる外部への影響を防ぐためのスタイル隔離 */
+#tiktok-pixel-container {{
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    position: absolute !important;
+    left: -9999px !important;
+    top: -9999px !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+}}
+</style>
+<div id="tiktok-pixel-container">
 <script type="text/javascript" defer async>
 !function (w, d, t) {{{{
   window.addEventListener('load', function() {{{{
@@ -155,6 +187,7 @@ window.addEventListener('load', function() {{
   }});
 }}}}(window, document, 'ttq');
 </script>
+</div>
 '''
         
         # HTMLをほぼそのまま維持する方法で挿入
@@ -199,21 +232,93 @@ window.addEventListener('load', function() {{
             if '<head' in new_html:
                 head_pos = new_html.find('<head')
                 head_end = new_html.find('>', head_pos) + 1
-                meta_tag = '<meta charset="UTF-8">'
-                # metaタグがなければ追加
+                
+                # CSSリセットとメタタグを追加
+                reset_css = '''<meta charset="UTF-8">
+<!-- TikTok Pixel用スタイル隔離 -->
+<style id="tiktok-pixel-reset">
+/* TikTok Pixelが元のページスタイルに影響しないようにするリセット */
+#tiktok-pixel-container, iframe[title="TikTok Pixel"] {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    position: absolute !important;
+    left: -9999px !important;
+    top: -9999px !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+}
+
+/* TikTok Pixelスクリプトからの影響を防ぐ */
+body, div, span, h1, h2, h3, h4, h5, h6, p, a, img, ul, ol, li, form, label, 
+table, tbody, tfoot, thead, tr, th, td {
+    font-family: initial !important;
+    font-size: initial !important;
+    font-weight: initial !important;
+    line-height: initial !important;
+    color: initial !important;
+    background: initial !important;
+    margin: initial !important;
+    padding: initial !important;
+    border: initial !important;
+    text-align: initial !important;
+}
+</style>'''
+                
+                # metaタグとCSSリセットがなければ追加
                 if '<meta charset=' not in new_html[:head_end+100]:
-                    new_html = new_html[:head_end] + meta_tag + new_html[head_end:]
+                    new_html = new_html[:head_end] + reset_css + new_html[head_end:]
+                elif 'tiktok-pixel-reset' not in new_html:
+                    charset_pos = new_html.find('<meta charset=')
+                    if charset_pos > 0:
+                        charset_end = new_html.find('>', charset_pos) + 1
+                        new_html = new_html[:charset_end] + reset_css[20:] + new_html[charset_end:]
+                    else:
+                        new_html = new_html[:head_end] + reset_css + new_html[head_end:]
             else:
                 # headタグがない場合
                 html_pos = new_html.find('<html')
                 html_end = new_html.find('>', html_pos) + 1
-                new_html = new_html[:html_end] + '<head><meta charset="UTF-8"></head>' + new_html[html_end:]
+                new_html = new_html[:html_end] + f'<head>{reset_css}</head>' + new_html[html_end:]
         elif '<!DOCTYPE' not in new_html and '<html' not in new_html:
             # HTMLフォーマットでない場合は基本的なHTML構造で囲む
             new_html = f'''<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
+<!-- TikTok Pixel用スタイル隔離 -->
+<style id="tiktok-pixel-reset">
+/* TikTok Pixelが元のページスタイルに影響しないようにするリセット */
+#tiktok-pixel-container, iframe[title="TikTok Pixel"] {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    position: absolute !important;
+    left: -9999px !important;
+    top: -9999px !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+}
+
+/* TikTok Pixelスクリプトからの影響を防ぐ */
+body, div, span, h1, h2, h3, h4, h5, h6, p, a, img, ul, ol, li, form, label, 
+table, tbody, tfoot, thead, tr, th, td {
+    font-family: initial !important;
+    font-size: initial !important;
+    font-weight: initial !important;
+    line-height: initial !important;
+    color: initial !important;
+    background: initial !important;
+    margin: initial !important;
+    padding: initial !important;
+    border: initial !important;
+    text-align: initial !important;
+}
+</style>
 <title>Redirected Content</title>
 </head>
 <body>
