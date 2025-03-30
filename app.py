@@ -217,6 +217,35 @@ def create():
             flash(f'URLアクセスエラー: {str(e)}', 'error')
             return redirect(url_for('index'))
         
+        # 文字化け検出と修正
+        if '繝' in html_content or '縺' in html_content:
+            app.logger.info(f"取得したHTMLコンテンツに文字化けを検出: {original_url}")
+            
+            # 一般的な文字化けパターンの修正を試みる
+            common_mojibake = {
+                '繧ｫ繧ｿ繧ｫ繝': 'カタカナ',
+                '鬮倥＆': '高さ',
+                '讌ｽ螢ｫ': '楽天',
+                '髮ｻ蟄': '電子',
+                '繝｡繝ｼ繧ｫ繝ｼ': 'メーカー',
+                '繝悶Λ繝ｳ繝': 'ブランド',
+                '繧ｷ繝ｧ繝': 'ショッ',
+                '繧｢繧､繝': 'アイテ',
+                '繧｢繝': 'アプ',
+                '繝昴う繝ｳ繝': 'ポイント'
+            }
+            
+            for mojibake, correct in common_mojibake.items():
+                if mojibake in html_content:
+                    html_content = html_content.replace(mojibake, correct)
+            
+            # 正規表現を使ったより複雑な置換パターン
+            # 「繝」の後に「ｼ」が続くパターンはよく「ー」に変換される
+            html_content = re.sub(r'繝ｼ', 'ー', html_content)
+            
+            # 楽天特有の文字化けパターン
+            html_content = re.sub(r'Rakuten\s+[Ff]ashion', '楽天ファッション', html_content)
+        
         # スクリプト隔離用のiframeを使うかどうかの判定
         use_iframe = 'true' == request.form.get('use_iframe', 'false')
         
@@ -578,163 +607,16 @@ iframe[title="TikTok Pixel"],
         file_name = f"{file_id}.html"
         file_path = os.path.join(URLS_DIR, file_name)
         
-        # HTMLエンコーディングを確認し、必要に応じて修正
-        if '<?xml' not in new_html and '<!DOCTYPE' not in new_html and '<html' in new_html:
-            # XMLやDOCTYPE宣言がない場合は追加
-            if '<head' in new_html:
-                head_pos = new_html.find('<head')
-                head_end = new_html.find('>', head_pos) + 1
-                
-                # CSSリセットとメタタグを追加（リンターエラー修正）
-                reset_css = '''<meta charset="UTF-8">
-<!-- TikTok Pixel用スタイル隔離 -->
-<style id="tiktok-pixel-reset">
-/* TikTok Pixelが元のページスタイルに影響しないようにするリセット */
-#tiktok-pixel-container, 
-iframe[title="TikTok Pixel"],
-.ttq-loading, .ttq-confirm, .ttq-pixel-base, 
-iframe.ttq-transport-frame {
-    /* 最も強力な非表示・隔離設定 */
-    display: none !important;
-    position: absolute !important;
-    width: 0 !important;
-    height: 0 !important;
-    opacity: 0 !important;
-    visibility: hidden !important;
-    pointer-events: none !important;
-    overflow: hidden !important;
-    clip: rect(0, 0, 0, 0) !important;
-    clip-path: inset(50%) !important;
-    margin: -1px !important;
-    padding: 0 !important;
-    border: 0 !important;
-    max-width: 0 !important;
-    max-height: 0 !important;
-    z-index: -9999 !important;
-}
-
-/* JS実行を妨げないがCSSは隔離 - スタイルの競合を防ぐ */
-#tiktok-pixel-container *, 
-iframe[title="TikTok Pixel"] *,
-.ttq-loading *, .ttq-confirm *,
-.ttq-pixel-base *, 
-iframe.ttq-transport-frame * {
-    all: initial !important;
-    contain: strict !important;
-}
-
-/* アニメーションとトランジションが干渉しないように */
-html, body {
-    animation-play-state: running !important;
-    transition-delay: 0s !important;
-    transition-duration: 0s !important;
-}
-
-/* TikTok Pixel関連のスタイルに対する上書き（メインページへの影響をブロック） */
-@keyframes none-ttq {
-    from { opacity: 0; }
-    to { opacity: 0; }
-}
-
-/* TikTokスクリプトにより追加される可能性のあるすべてのアニメーション効果を無効化 */
-[class*="ttq-"], [id*="ttq-"], 
-[class*="tiktok-"], [id*="tiktok-"] {
-    animation: none-ttq 0s !important;
-    transition: none !important;
-    transform: none !important;
-}
-</style>'''
-                
-                # metaタグとCSSリセットがなければ追加
-                if '<meta charset=' not in new_html[:head_end+100]:
-                    new_html = new_html[:head_end] + reset_css + new_html[head_end:]
-                elif 'tiktok-pixel-reset' not in new_html:
-                    charset_pos = new_html.find('<meta charset=')
-                    if charset_pos > 0:
-                        charset_end = new_html.find('>', charset_pos) + 1
-                        new_html = new_html[:charset_end] + reset_css[20:] + new_html[charset_end:]
-                    else:
-                        new_html = new_html[:head_end] + reset_css + new_html[head_end:]
+        # メタタグでUTF-8設定されていることを確認（文字化け予防）
+        if '<meta charset="UTF-8">' not in new_html:
+            meta_pos = new_html.find('<head>') + 6 if '<head>' in new_html else 0
+            if meta_pos > 0:
+                new_html = new_html[:meta_pos] + '\n<meta charset="UTF-8">\n' + new_html[meta_pos:]
             else:
-                # headタグがない場合
-                html_pos = new_html.find('<html')
-                html_end = new_html.find('>', html_pos) + 1
-                new_html = new_html[:html_end] + f'<head>{reset_css}</head>' + new_html[html_end:]
-        elif '<!DOCTYPE' not in new_html and '<html' not in new_html:
-            # HTMLフォーマットでない場合は基本的なHTML構造で囲む
-            formatted_html = f'''<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<!-- 元のURL: {original_url} -->
-{metadata_script}
-<!-- TikTok Pixel用スタイル隔離 -->
-<style id="tiktok-pixel-reset">
-/* TikTok Pixelが元のページスタイルに影響しないようにするリセット */
-#tiktok-pixel-container, 
-iframe[title="TikTok Pixel"],
-.ttq-loading, .ttq-confirm, .ttq-pixel-base, 
-iframe.ttq-transport-frame {{
-    /* 最も強力な非表示・隔離設定 */
-    display: none !important;
-    position: absolute !important;
-    width: 0 !important;
-    height: 0 !important;
-    opacity: 0 !important;
-    visibility: hidden !important;
-    pointer-events: none !important;
-    overflow: hidden !important;
-    clip: rect(0, 0, 0, 0) !important;
-    clip-path: inset(50%) !important;
-    margin: -1px !important;
-    padding: 0 !important;
-    border: 0 !important;
-    max-width: 0 !important;
-    max-height: 0 !important;
-    z-index: -9999 !important;
-}}
-
-/* JS実行を妨げないがCSSは隔離 - スタイルの競合を防ぐ */
-#tiktok-pixel-container *, 
-iframe[title="TikTok Pixel"] *,
-.ttq-loading *, .ttq-confirm *,
-.ttq-pixel-base *, 
-iframe.ttq-transport-frame * {{
-    all: initial !important;
-    contain: strict !important;
-}}
-
-/* アニメーションとトランジションが干渉しないように */
-html, body {{
-    animation-play-state: running !important;
-    transition-delay: 0s !important;
-    transition-duration: 0s !important;
-}}
-
-/* TikTok Pixel関連のスタイルに対する上書き（メインページへの影響をブロック） */
-@keyframes none-ttq {{
-    from {{ opacity: 0; }}
-    to {{ opacity: 0; }}
-}}
-
-/* TikTokスクリプトにより追加される可能性のあるすべてのアニメーション効果を無効化 */
-[class*="ttq-"], [id*="ttq-"], 
-[class*="tiktok-"], [id*="tiktok-"] {{
-    animation: none-ttq 0s !important;
-    transition: none !important;
-    transform: none !important;
-}}
-</style>
-{pixel_script}
-<title>Redirected Content</title>
-</head>
-<body>
-{html_content}
-</body>
-</html>'''
-            new_html = formatted_html
+                # headがない場合は先頭に追加
+                new_html = '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8">\n</head>\n<body>\n' + new_html + '\n</body>\n</html>'
         
-        # 修正したHTMLを保存
+        # UTF-8で明示的に保存
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(new_html)
         
@@ -819,41 +701,110 @@ def view(file_id):
         if not os.path.exists(file_path):
             app.logger.error(f"File not found: {file_path}")
             return render_template('error.html', error="ファイルが見つかりません"), 404
+        
+        # バイナリモードでファイルを読み込む
+        with open(file_path, 'rb') as f:
+            raw_content = f.read()
+        
+        # まずUTF-8で試す
+        try:
+            html_content = raw_content.decode('utf-8')
+        except UnicodeDecodeError:
+            # UTF-8での読み込みに失敗した場合、他のエンコーディングを試す
+            html_content = None
+            encodings = ['shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
             
-        # HTMLファイルの内容を読み込む
-        with open(file_path, 'r', encoding='utf-8') as f:
-            html_content = f.read()
+            for encoding in encodings:
+                try:
+                    html_content = raw_content.decode(encoding)
+                    app.logger.info(f"エンコーディング自動検出: {encoding}で正常にデコードしました")
+                    break
+                except UnicodeDecodeError:
+                    continue
             
-        # 文字化けチェックと修正
+            # どのエンコーディングでも読み込めなかった場合は、エラー回避のためUTF-8でデコード
+            if html_content is None:
+                html_content = raw_content.decode('utf-8', errors='replace')
+                app.logger.warning("すべてのエンコーディングでデコードに失敗しました。UTF-8で強制的にデコードします。")
+        
+        # 文字化け検出と修正
         if '繝' in html_content or '縺' in html_content:
-            try:
-                # UTF-8で読み込んだときに文字化けしている場合、別のエンコーディングを試す
-                with open(file_path, 'rb') as f:
-                    raw_content = f.read()
-                
-                # 可能性のあるエンコーディングリスト
-                encodings = ['shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
-                
+            app.logger.info(f"文字化けを検出: {file_id}")
+            
+            # 文字化けが疑われる文字の置換マッピング
+            mojibake_patterns = [
+                ('繝', ''), ('縺', ''), ('菴', ''), ('・', '')
+            ]
+            
+            # 可能性のあるエンコーディングを試す
+            encodings = ['shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
+            for encoding in encodings:
+                try:
+                    # 一度encodeしてからdecodeしてみる
+                    test_content = html_content.encode('utf-8', errors='ignore').decode(encoding, errors='ignore')
+                    # 文字化けの特徴がなければ正しいエンコーディングと判断
+                    if '繝' not in test_content and '縺' not in test_content:
+                        html_content = test_content
+                        app.logger.info(f"文字化けを{encoding}で修正しました")
+                        break
+                except Exception:
+                    continue
+            
+            # バイナリレベルでの再変換を試みる
+            if '繝' in html_content or '縺' in html_content:
                 for encoding in encodings:
                     try:
-                        decoded_content = raw_content.decode(encoding)
-                        # 文字化けの特徴がなければ正しいエンコーディングと判断
-                        if '繝' not in decoded_content and '縺' not in decoded_content:
-                            html_content = decoded_content
-                            app.logger.info(f"文字化け修正: {encoding}エンコーディングで再解釈しました")
+                        # バイナリデータからの直接変換
+                        decoded = raw_content.decode(encoding, errors='ignore')
+                        if '繝' not in decoded and '縺' not in decoded:
+                            html_content = decoded
+                            app.logger.info(f"バイナリから{encoding}で再デコードして文字化けを修正しました")
                             break
-                    except UnicodeDecodeError:
+                    except Exception:
                         continue
-            except Exception as e:
-                app.logger.error(f"文字化け修正エラー: {str(e)}")
+            
+            # 一般的な文字化けパターンの修正も試みる
+            if '繝' in html_content or '縺' in html_content:
+                app.logger.info("パターン置換による文字化け修正を試みます")
+                fixed_content = html_content
+                # SHIFT-JISの不正なUTF-8エンコーディングが原因の文字化け対応
+                common_mojibake = {
+                    # 日本語の一般的な文字化けパターン
+                    '繧ｫ繧ｿ繧ｫ繝': 'カタカナ',
+                    '鬮倥＆': '高さ',
+                    '讌ｽ螢ｫ': '楽天',
+                    '髮ｻ蟄': '電子',
+                    '繝｡繝ｼ繧ｫ繝ｼ': 'メーカー'
+                }
+                
+                for mojibake, correct in common_mojibake.items():
+                    if mojibake in fixed_content:
+                        fixed_content = fixed_content.replace(mojibake, correct)
+                
+                # パターン修正で文字化けが減った場合は採用
+                if fixed_content.count('繝') < html_content.count('繝'):
+                    html_content = fixed_content
+                    app.logger.info("パターン置換で文字化けを部分的に修正しました")
         
         # オリジナルURLを取得
-        original_url = target_url.get('url', '')
-        parsed_url = urlparse(original_url)
-        base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        original_url = target_url.get('original_url', '')
+        if original_url:
+            parsed_url = urlparse(original_url)
+            base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            
+            # 相対パスを絶対パスに変換
+            html_content = fix_relative_paths(html_content, base_domain, original_url)
         
-        # 相対パスを絶対パスに変換
-        html_content = fix_relative_paths(html_content, base_domain, original_url)
+        # メタタグでのエンコーディング指定を確認
+        if '<meta charset=' not in html_content.lower():
+            # charset指定がない場合は追加
+            head_end_pos = html_content.find('</head>')
+            if head_end_pos > 0:
+                html_content = html_content[:head_end_pos] + '<meta charset="UTF-8">\n' + html_content[head_end_pos:]
+        else:
+            # 既存のcharset指定をUTF-8に統一
+            charset_pattern = re.compile(r'<meta[^>]*charset=[\'"](.*?)[\'"][^>]*>', re.IGNORECASE)
+            html_content = charset_pattern.sub('<meta charset="UTF-8">', html_content)
         
         # TikTokピクセル用のスクリプト
         tiktok_pixel_script = f"""
@@ -917,7 +868,7 @@ def view(file_id):
         
         # レスポンスを返す
         response = make_response(html_content)
-        response.headers['Content-Type'] = 'text/html'
+        response.headers['Content-Type'] = 'text/html; charset=utf-8'
         return response
     except Exception as e:
         app.logger.error(f"ファイル読み込みエラー: {str(e)}")
