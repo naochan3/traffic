@@ -104,65 +104,36 @@ def create():
 </script>
 '''
         
-        # 最小限の変更で済むようにheadタグを見つけて直接操作する
-        try:
-            # まず<head>タグの終了位置を探す
-            head_end_index = html_content.find("</head>")
-            
-            if head_end_index > 0:
-                # headタグが見つかった場合、そこにスクリプトを挿入
-                new_html = html_content[:head_end_index] + pixel_script + html_content[head_end_index:]
-            else:
-                # headタグが見つからない場合、BeautifulSoupで解析
-                soup = BeautifulSoup(html_content, 'html5lib')
-                
-                if not soup.head:
-                    head = soup.new_tag('head')
-                    meta_charset = soup.new_tag('meta')
-                    meta_charset['charset'] = 'utf-8'
-                    head.append(meta_charset)
-                    
-                    if soup.html:
-                        soup.html.insert(0, head)
-                    else:
-                        html = soup.new_tag('html')
-                        html.append(head)
-                        soup.append(html)
-                
-                # Pixelスクリプトを挿入
-                soup.head.append(BeautifulSoup(pixel_script, 'html.parser'))
-                new_html = str(soup)
-        except Exception as e:
-            app.logger.error(f"HTML解析エラー: {str(e)}")
-            # エラーが発生した場合、単純に文字列操作で挿入を試みる
-            head_tag = html_content.find("<head>")
-            if head_tag >= 0:
-                head_end = html_content.find("</head>", head_tag)
-                if head_end >= 0:
-                    new_html = html_content[:head_end] + pixel_script + html_content[head_end:]
+        # HTMLをほぼそのまま維持する方法で挿入
+        # <head>タグを探してその終了直前にスクリプトを挿入
+        head_end_pos = html_content.find("</head>")
+        if head_end_pos > 0:
+            new_html = html_content[:head_end_pos] + pixel_script + html_content[head_end_pos:]
+        else:
+            # headタグが見つからない場合の処理
+            head_start_pos = html_content.find("<head")
+            if head_start_pos > 0:
+                head_start_end = html_content.find(">", head_start_pos)
+                if head_start_end > 0:
+                    insert_pos = head_start_end + 1
+                    new_html = html_content[:insert_pos] + pixel_script + html_content[insert_pos:]
                 else:
-                    new_html = html_content.replace("<head>", "<head>" + pixel_script)
-            else:
-                # headタグがない場合は、bodyタグの直後に挿入
-                body_tag = html_content.find("<body")
-                if body_tag >= 0:
-                    body_end = html_content.find(">", body_tag)
-                    if body_end >= 0:
-                        new_html = html_content[:body_end+1] + f"<head>{pixel_script}</head>" + html_content[body_end+1:]
-                    else:
-                        new_html = html_content
-                else:
-                    # bodyタグもない場合は、htmlタグの直後に挿入
-                    html_tag = html_content.find("<html")
-                    if html_tag >= 0:
-                        html_end = html_content.find(">", html_tag)
-                        if html_end >= 0:
-                            new_html = html_content[:html_end+1] + f"<head>{pixel_script}</head>" + html_content[html_end+1:]
+                    # HTMLタグを探してその直後に挿入
+                    html_pos = html_content.find("<html")
+                    if html_pos > 0:
+                        html_end = html_content.find(">", html_pos)
+                        if html_end > 0:
+                            insert_pos = html_end + 1
+                            new_html = html_content[:insert_pos] + "<head>" + pixel_script + "</head>" + html_content[insert_pos:]
                         else:
-                            new_html = html_content
+                            # HTMLタグもない場合は先頭に挿入
+                            new_html = "<!DOCTYPE html><html><head>" + pixel_script + "</head>" + html_content
                     else:
-                        # htmlタグもない場合は、ファイルの先頭に挿入
-                        new_html = f"<!DOCTYPE html><html><head>{pixel_script}</head>" + html_content
+                        # HTMLタグもない場合は先頭に挿入
+                        new_html = "<!DOCTYPE html><html><head>" + pixel_script + "</head>" + html_content
+            else:
+                # headタグがない場合は先頭に挿入
+                new_html = "<!DOCTYPE html><html><head>" + pixel_script + "</head>" + html_content
         
         # 一意のファイル名を生成
         file_id = str(uuid.uuid4())
