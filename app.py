@@ -47,11 +47,68 @@ if not os.path.exists(URL_LIST_FILE):
 def get_url_list():
     try:
         if not os.path.exists(URL_LIST_FILE):
-            with open(URL_LIST_FILE, 'w') as f:
-                json.dump([], f)
+            with open(URL_LIST_FILE, 'w', encoding='utf-8') as f:
+                json.dump([], f, ensure_ascii=False)
         
-        with open(URL_LIST_FILE, 'r') as f:
-            return json.load(f)
+        # まずUTF-8で試す
+        try:
+            with open(URL_LIST_FILE, 'r', encoding='utf-8') as f:
+                url_list = json.load(f)
+                
+            # 文字化け検出
+            has_mojibake = False
+            for url in url_list:
+                for key, value in url.items():
+                    if isinstance(value, str) and ('繝' in value or '縺' in value):
+                        has_mojibake = True
+                        break
+                if has_mojibake:
+                    break
+                    
+            # 文字化けが検出された場合、別のエンコーディングを試す
+            if has_mojibake:
+                app.logger.info("URL一覧に文字化けを検出しました。別のエンコーディングを試みます。")
+                encodings = ['shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
+                
+                for encoding in encodings:
+                    try:
+                        with open(URL_LIST_FILE, 'rb') as f:
+                            content = f.read()
+                        decoded_content = content.decode(encoding, errors='ignore')
+                        
+                        # JSONとして解析できるか試す
+                        fixed_url_list = json.loads(decoded_content)
+                        
+                        # 文字化けチェック
+                        fixed_has_mojibake = False
+                        for url in fixed_url_list:
+                            for key, value in url.items():
+                                if isinstance(value, str) and ('繝' in value or '縺' in value):
+                                    fixed_has_mojibake = True
+                                    break
+                            if fixed_has_mojibake:
+                                break
+                                
+                        if not fixed_has_mojibake:
+                            # 文字化けが解消された場合は修正したリストを使用
+                            app.logger.info(f"URL一覧の文字化けを{encoding}で修正しました")
+                            url_list = fixed_url_list
+                            
+                            # 修正したリストを保存
+                            with open(URL_LIST_FILE, 'w', encoding='utf-8') as f:
+                                json.dump(url_list, f, ensure_ascii=False)
+                            break
+                    except Exception as e:
+                        app.logger.error(f"エンコーディング{encoding}での読み込み失敗: {str(e)}")
+            
+            return url_list
+            
+        except json.JSONDecodeError:
+            app.logger.error("JSONデコードエラー、ファイルを再初期化します")
+            with open(URL_LIST_FILE, 'w', encoding='utf-8') as f:
+                json.dump([], f, ensure_ascii=False)
+            return []
+            
     except Exception as e:
         app.logger.error(f"URLリストの読み込みエラー: {str(e)}")
         return []
@@ -59,8 +116,29 @@ def get_url_list():
 # URLリストを保存する関数
 def save_url_list(url_list):
     try:
-        with open(URL_LIST_FILE, 'w') as f:
-            json.dump(url_list, f)
+        # 文字化けが疑われるフィールドを修正
+        for url in url_list:
+            for key, value in url.items():
+                if isinstance(value, str) and ('繝' in value or '縺' in value):
+                    # 文字化けしている可能性があるため修正を試みる
+                    try:
+                        # UTF-8バイト列として扱い、別のエンコーディングで再解釈
+                        raw_bytes = value.encode('utf-8', errors='ignore')
+                        for encoding in ['shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']:
+                            try:
+                                # 一度encodeしてからdecodeしてみる
+                                test_decode = raw_bytes.decode(encoding, errors='ignore')
+                                if '繝' not in test_decode and '縺' not in test_decode:
+                                    url[key] = test_decode
+                                    app.logger.info(f"文字化け修正: {key}フィールドを{encoding}で再解釈しました")
+                                    break
+                            except Exception:
+                                continue
+                    except Exception as e:
+                        app.logger.error(f"文字化け修正エラー (フィールド: {key}): {str(e)}")
+        
+        with open(URL_LIST_FILE, 'w', encoding='utf-8') as f:
+            json.dump(url_list, f, ensure_ascii=False)
         # キャッシュを無効化して次回の取得で最新データを読み込む
         cache.delete('url_list')
         return True
@@ -91,7 +169,28 @@ def fetch_html_content(url):
         # エンコーディングが未検出の場合はUTF-8を試みる
         response.encoding = 'utf-8'
     
-    return response.text
+    html_content = response.text
+    
+    # 文字化け検出と修正
+    if '繝' in html_content or '縺' in html_content:
+        app.logger.info(f"URLコンテンツに文字化けを検出: {url}")
+        
+        # オリジナルのバイナリコンテンツ
+        raw_content = response.content
+        
+        # 可能性のあるエンコーディングを試す
+        encodings = ['shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
+        for encoding in encodings:
+            try:
+                test_content = raw_content.decode(encoding, errors='ignore')
+                if '繝' not in test_content and '縺' not in test_content:
+                    app.logger.info(f"コンテンツの文字化けを{encoding}で修正しました")
+                    html_content = test_content
+                    break
+            except Exception as e:
+                app.logger.error(f"エンコーディング{encoding}での変換失敗: {str(e)}")
+    
+    return html_content
 
 @app.route('/create', methods=['POST'])
 def create():
@@ -724,6 +823,29 @@ def view(file_id):
         # HTMLファイルの内容を読み込む
         with open(file_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
+            
+        # 文字化けチェックと修正
+        if '繝' in html_content or '縺' in html_content:
+            try:
+                # UTF-8で読み込んだときに文字化けしている場合、別のエンコーディングを試す
+                with open(file_path, 'rb') as f:
+                    raw_content = f.read()
+                
+                # 可能性のあるエンコーディングリスト
+                encodings = ['shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
+                
+                for encoding in encodings:
+                    try:
+                        decoded_content = raw_content.decode(encoding)
+                        # 文字化けの特徴がなければ正しいエンコーディングと判断
+                        if '繝' not in decoded_content and '縺' not in decoded_content:
+                            html_content = decoded_content
+                            app.logger.info(f"文字化け修正: {encoding}エンコーディングで再解釈しました")
+                            break
+                    except UnicodeDecodeError:
+                        continue
+            except Exception as e:
+                app.logger.error(f"文字化け修正エラー: {str(e)}")
         
         # オリジナルURLを取得
         original_url = target_url.get('url', '')
