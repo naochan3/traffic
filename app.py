@@ -71,8 +71,20 @@ def index():
 @cache.memoize(timeout=3600)  # 1時間キャッシュ
 def fetch_html_content(url):
     """URLからHTMLコンテンツを取得し、キャッシュする"""
-    response = requests.get(url, timeout=10)
+    # リクエストヘッダーを追加
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8'
+    }
+    response = requests.get(url, headers=headers, timeout=10)
     response.raise_for_status()
+    
+    # レスポンスのエンコーディングを検出・設定
+    if response.encoding.lower() == 'iso-8859-1':
+        # エンコーディングが未検出の場合はUTF-8を試みる
+        response.encoding = 'utf-8'
+    
     return response.text
 
 @app.route('/create', methods=['POST'])
@@ -181,6 +193,34 @@ window.addEventListener('load', function() {{
         file_name = f"{file_id}.html"
         file_path = os.path.join(URLS_DIR, file_name)
         
+        # HTMLエンコーディングを確認し、必要に応じて修正
+        if '<?xml' not in new_html and '<!DOCTYPE' not in new_html and '<html' in new_html:
+            # XMLやDOCTYPE宣言がない場合は追加
+            if '<head' in new_html:
+                head_pos = new_html.find('<head')
+                head_end = new_html.find('>', head_pos) + 1
+                meta_tag = '<meta charset="UTF-8">'
+                # metaタグがなければ追加
+                if '<meta charset=' not in new_html[:head_end+100]:
+                    new_html = new_html[:head_end] + meta_tag + new_html[head_end:]
+            else:
+                # headタグがない場合
+                html_pos = new_html.find('<html')
+                html_end = new_html.find('>', html_pos) + 1
+                new_html = new_html[:html_end] + '<head><meta charset="UTF-8"></head>' + new_html[html_end:]
+        elif '<!DOCTYPE' not in new_html and '<html' not in new_html:
+            # HTMLフォーマットでない場合は基本的なHTML構造で囲む
+            new_html = f'''<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Redirected Content</title>
+</head>
+<body>
+{new_html}
+</body>
+</html>'''
+        
         # 修正したHTMLを保存
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(new_html)
@@ -241,7 +281,9 @@ def view(file_id):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        return content
+        
+        # Content-Typeヘッダーでエンコーディングを明示的に指定
+        return content, 200, {'Content-Type': 'text/html; charset=utf-8'}
     except Exception as e:
         app.logger.error(f"ファイル読み込みエラー: {str(e)}")
         return "ファイルの読み込み中にエラーが発生しました", 500
