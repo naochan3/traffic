@@ -92,14 +92,6 @@ def create():
             flash(f'URLアクセスエラー: {str(e)}', 'error')
             return redirect(url_for('index'))
         
-        # HTMLの解析 - より堅牢なhtml5libパーサーを使用
-        # html5libが必要なのでrequirements.txtに追加する必要があります
-        try:
-            soup = BeautifulSoup(html_content, 'html5lib')
-        except:
-            # もしhtml5libがインストールされていない場合はデフォルトに戻す
-            soup = BeautifulSoup(html_content, 'html.parser')
-        
         # TikTok Pixelスクリプトの作成
         pixel_script = f'''
 <script>
@@ -112,33 +104,65 @@ def create():
 </script>
 '''
         
-        # headタグがない場合は作成
-        if not soup.head:
-            head = soup.new_tag('head')
-            # エンコーディングメタタグを追加
-            meta_charset = soup.new_tag('meta')
-            meta_charset['charset'] = 'utf-8'
-            head.append(meta_charset)
+        # 最小限の変更で済むようにheadタグを見つけて直接操作する
+        try:
+            # まず<head>タグの終了位置を探す
+            head_end_index = html_content.find("</head>")
             
-            if soup.html:
-                soup.html.insert(0, head)
+            if head_end_index > 0:
+                # headタグが見つかった場合、そこにスクリプトを挿入
+                new_html = html_content[:head_end_index] + pixel_script + html_content[head_end_index:]
             else:
-                html = soup.new_tag('html')
-                html.append(head)
-                soup.append(html)
-        else:
-            # 既存のheadタグに文字コードメタタグがなければ追加
-            meta_charset = soup.head.find('meta', charset=True)
-            meta_content_type = soup.head.find('meta', {'http-equiv': 'Content-Type'})
-            
-            if not meta_charset and not meta_content_type:
-                meta_charset = soup.new_tag('meta')
-                meta_charset['charset'] = 'utf-8'
-                soup.head.insert(0, meta_charset)
-        
-        # Pixelスクリプトを挿入
-        new_script = BeautifulSoup(pixel_script, 'html.parser')
-        soup.head.append(new_script)
+                # headタグが見つからない場合、BeautifulSoupで解析
+                soup = BeautifulSoup(html_content, 'html5lib')
+                
+                if not soup.head:
+                    head = soup.new_tag('head')
+                    meta_charset = soup.new_tag('meta')
+                    meta_charset['charset'] = 'utf-8'
+                    head.append(meta_charset)
+                    
+                    if soup.html:
+                        soup.html.insert(0, head)
+                    else:
+                        html = soup.new_tag('html')
+                        html.append(head)
+                        soup.append(html)
+                
+                # Pixelスクリプトを挿入
+                soup.head.append(BeautifulSoup(pixel_script, 'html.parser'))
+                new_html = str(soup)
+        except Exception as e:
+            app.logger.error(f"HTML解析エラー: {str(e)}")
+            # エラーが発生した場合、単純に文字列操作で挿入を試みる
+            head_tag = html_content.find("<head>")
+            if head_tag >= 0:
+                head_end = html_content.find("</head>", head_tag)
+                if head_end >= 0:
+                    new_html = html_content[:head_end] + pixel_script + html_content[head_end:]
+                else:
+                    new_html = html_content.replace("<head>", "<head>" + pixel_script)
+            else:
+                # headタグがない場合は、bodyタグの直後に挿入
+                body_tag = html_content.find("<body")
+                if body_tag >= 0:
+                    body_end = html_content.find(">", body_tag)
+                    if body_end >= 0:
+                        new_html = html_content[:body_end+1] + f"<head>{pixel_script}</head>" + html_content[body_end+1:]
+                    else:
+                        new_html = html_content
+                else:
+                    # bodyタグもない場合は、htmlタグの直後に挿入
+                    html_tag = html_content.find("<html")
+                    if html_tag >= 0:
+                        html_end = html_content.find(">", html_tag)
+                        if html_end >= 0:
+                            new_html = html_content[:html_end+1] + f"<head>{pixel_script}</head>" + html_content[html_end+1:]
+                        else:
+                            new_html = html_content
+                    else:
+                        # htmlタグもない場合は、ファイルの先頭に挿入
+                        new_html = f"<!DOCTYPE html><html><head>{pixel_script}</head>" + html_content
         
         # 一意のファイル名を生成
         file_id = str(uuid.uuid4())
@@ -147,7 +171,7 @@ def create():
         
         # 修正したHTMLを保存
         with open(file_path, 'w', encoding='utf-8') as f:
-            f.write('<!DOCTYPE html>\n' + str(soup))
+            f.write(new_html)
         
         # URLリストに追加
         url_list = get_url_list()
