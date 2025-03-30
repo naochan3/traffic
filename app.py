@@ -150,23 +150,34 @@ window.addEventListener('DOMContentLoaded', function() {{
             // スクリプト要素をdocument.headに直接追加しない隔離コンテナを作成
             var container = document.createElement('div');
             container.id = 'tiktok-pixel-container';
-            container.style.cssText = 'display:none!important;width:0!important;height:0!important;opacity:0!important;pointer-events:none!important;position:absolute!important;';
+            container.style.cssText = 'position:absolute!important;top:-9999px!important;left:-9999px!important;width:0!important;height:0!important;opacity:0!important;pointer-events:none!important;overflow:hidden!important;visibility:hidden!important;display:block!important;';
             
             // iframe要素を作成して隔離環境を提供
             var iframe = document.createElement('iframe');
             iframe.title = "TikTok Pixel";
             iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-            iframe.style.cssText = 'border:0!important;width:0!important;height:0!important;display:none!important;';
+            iframe.style.cssText = 'position:absolute!important;top:-9999px!important;left:-9999px!important;width:0!important;height:0!important;border:0!important;opacity:0!important;pointer-events:none!important;overflow:hidden!important;visibility:hidden!important;display:block!important;';
+            iframe.setAttribute('aria-hidden', 'true');
             
-            // コンテナにiframeを追加し、bodyの最後に配置
+            // コンテナにiframeを追加し、headに配置（bodyではなく）
             container.appendChild(iframe);
-            document.body.appendChild(container);
+            if (document.head) {
+                document.head.appendChild(container);
+            } else {
+                document.addEventListener('DOMContentLoaded', function() {
+                    if (document.head) {
+                        document.head.appendChild(container);
+                    }
+                });
+            }
             
             // iframe内にTikTokスクリプトを安全に埋め込み
-            var iframeDoc = iframe.contentWindow.document;
-            iframeDoc.open();
-            iframeDoc.write('""" + iframe_html.replace("'", "\\'") + """');
-            iframeDoc.close();
+            setTimeout(function() {
+                var iframeDoc = iframe.contentWindow.document;
+                iframeDoc.open();
+                iframeDoc.write('""" + iframe_html.replace("'", "\\'") + """');
+                iframeDoc.close();
+            }, 1000);
         } catch(err) {
             // エラーを非表示にして、メインページに影響を与えないようにする
             console.error('[TikTok]: Pixel設定エラー', err);
@@ -728,54 +739,77 @@ def clear_cache():
 def fix_relative_paths(html_content, base_domain, original_url):
     """HTMLコンテンツ内の相対パスを絶対パスに変換する"""
     try:
-        # HTMLパースを試みる
-        soup = BeautifulSoup(html_content, 'html.parser')
-        
-        # src属性の修正
-        for tag in soup.find_all(attrs={"src": True}):
-            if tag['src'].startswith('//'):
-                # プロトコル相対URLの場合
-                tag['src'] = f"https:{tag['src']}"
-            elif not tag['src'].startswith(('http://', 'https://', 'data:', '#')):
-                # 相対パスの場合
-                tag['src'] = urljoin(original_url, tag['src'])
-        
-        # href属性の修正
-        for tag in soup.find_all(attrs={"href": True}):
-            if tag['href'].startswith('//'):
-                # プロトコル相対URLの場合
-                tag['href'] = f"https:{tag['href']}"
-            elif not tag['href'].startswith(('http://', 'https://', 'data:', '#', 'javascript:', 'mailto:')):
-                # 相対パスの場合
-                tag['href'] = urljoin(original_url, tag['href'])
-        
-        # srcset属性の修正
-        for tag in soup.find_all(attrs={"srcset": True}):
-            srcset = tag['srcset']
-            # スペースで分割し、URLとサイズ指定部分に分ける
-            parts = srcset.split(',')
-            new_parts = []
-            for part in parts:
-                part = part.strip()
-                if not part:
-                    continue
-                # URLと記述子（1x, 2x など）を分離
-                url_parts = part.split(' ')
-                url = url_parts[0]
-                if url.startswith('//'):
-                    url = f"https:{url}"
-                elif not url.startswith(('http://', 'https://', 'data:', '#')):
-                    url = urljoin(original_url, url)
-                url_parts[0] = url
-                new_parts.append(' '.join(url_parts))
-            tag['srcset'] = ', '.join(new_parts)
-        
-        # スタイルシート内のURLを修正
-        for style_tag in soup.find_all('style'):
-            if style_tag.string:
-                # url() パターンを検索して絶対パスに変換
-                style_content = style_tag.string
-                # url(...) パターンを抽出
+        # 軽量なHTMLパース処理を試みる
+        return fix_relative_paths_minimal(html_content, original_url)
+    except Exception as e:
+        # 軽量処理に失敗した場合はログを残す
+        app.logger.error(f"最小限HTMLパースエラー: {str(e)}、従来の方法を試みます")
+        try:
+            # HTMLパースを試みる
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # src属性の修正
+            for tag in soup.find_all(attrs={"src": True}):
+                if tag['src'].startswith('//'):
+                    # プロトコル相対URLの場合
+                    tag['src'] = f"https:{tag['src']}"
+                elif not tag['src'].startswith(('http://', 'https://', 'data:', '#')):
+                    # 相対パスの場合
+                    tag['src'] = urljoin(original_url, tag['src'])
+            
+            # href属性の修正
+            for tag in soup.find_all(attrs={"href": True}):
+                if tag['href'].startswith('//'):
+                    # プロトコル相対URLの場合
+                    tag['href'] = f"https:{tag['href']}"
+                elif not tag['href'].startswith(('http://', 'https://', 'data:', '#', 'javascript:', 'mailto:')):
+                    # 相対パスの場合
+                    tag['href'] = urljoin(original_url, tag['href'])
+            
+            # srcset属性の修正
+            for tag in soup.find_all(attrs={"srcset": True}):
+                srcset = tag['srcset']
+                # スペースで分割し、URLとサイズ指定部分に分ける
+                parts = srcset.split(',')
+                new_parts = []
+                for part in parts:
+                    part = part.strip()
+                    if not part:
+                        continue
+                    # URLと記述子（1x, 2x など）を分離
+                    url_parts = part.split(' ')
+                    url = url_parts[0]
+                    if url.startswith('//'):
+                        url = f"https:{url}"
+                    elif not url.startswith(('http://', 'https://', 'data:', '#')):
+                        url = urljoin(original_url, url)
+                    url_parts[0] = url
+                    new_parts.append(' '.join(url_parts))
+                tag['srcset'] = ', '.join(new_parts)
+            
+            # スタイルシート内のURLを修正
+            for style_tag in soup.find_all('style'):
+                if style_tag.string:
+                    # url() パターンを検索して絶対パスに変換
+                    style_content = style_tag.string
+                    # url(...) パターンを抽出
+                    url_pattern = re.compile(r'url\([\'"]?([^\'")]+)[\'"]?\)')
+                    
+                    def replace_url(match):
+                        url = match.group(1)
+                        if url.startswith('//'):
+                            return f"url(https:{url})"
+                        elif not url.startswith(('http://', 'https://', 'data:', '#')):
+                            return f"url({urljoin(original_url, url)})"
+                        else:
+                            return match.group(0)
+                    
+                    style_tag.string = url_pattern.sub(replace_url, style_content)
+                    
+            # インラインスタイルのURLを修正
+            for tag in soup.find_all(attrs={"style": True}):
+                style_content = tag['style']
+                # url() パターンを抽出
                 url_pattern = re.compile(r'url\([\'"]?([^\'")]+)[\'"]?\)')
                 
                 def replace_url(match):
@@ -787,42 +821,90 @@ def fix_relative_paths(html_content, base_domain, original_url):
                     else:
                         return match.group(0)
                 
-                style_tag.string = url_pattern.sub(replace_url, style_content)
+                tag['style'] = url_pattern.sub(replace_url, style_content)
                 
-        # インラインスタイルのURLを修正
-        for tag in soup.find_all(attrs={"style": True}):
-            style_content = tag['style']
-            # url() パターンを抽出
-            url_pattern = re.compile(r'url\([\'"]?([^\'")]+)[\'"]?\)')
+            return str(soup)
+        except Exception as e:
+            # HTMLパースに失敗した場合は、正規表現でのみ置換を試みる
+            app.logger.error(f"HTMLパースエラー: {str(e)}、正規表現で置換を試みます")
             
-            def replace_url(match):
-                url = match.group(1)
-                if url.startswith('//'):
-                    return f"url(https:{url})"
-                elif not url.startswith(('http://', 'https://', 'data:', '#')):
-                    return f"url({urljoin(original_url, url)})"
-                else:
-                    return match.group(0)
+            # 基本的な属性の置換パターン
+            patterns = [
+                (r'(src|href)=[\'"](?!(?:http|https|data|#|javascript|mailto))([^\'"]+)[\'"]', r'\1="' + original_url + r'\2"'),
+                (r'(src|href)=[\'"]//([^\'"]+)[\'"]', r'\1="https://\2"'),
+                (r'url\([\'"]?(?!(?:http|https|data|#))([^\)]+?)[\'"]?\)', r'url(' + original_url + r'\1)'),
+                (r'url\([\'"]?//([^\)]+?)[\'"]?\)', r'url(https://\1)')
+            ]
             
-            tag['style'] = url_pattern.sub(replace_url, style_content)
-            
-        return str(soup)
-    except Exception as e:
-        # HTMLパースに失敗した場合は、正規表現でのみ置換を試みる
-        app.logger.error(f"HTMLパースエラー: {str(e)}、正規表現で置換を試みます")
-        
-        # 基本的な属性の置換パターン
+            for pattern, replacement in patterns:
+                html_content = re.sub(pattern, replacement, html_content)
+                
+            return html_content
+
+# 最小限のHTMLパース処理で相対パスを絶対パスに変換する新関数
+def fix_relative_paths_minimal(html_content, base_url):
+    """正規表現のみを使用して相対パスを絶対パスに変換し、元のHTMLの構造を可能な限り維持"""
+    try:
+        # より正確な正規表現パターン
         patterns = [
-            (r'(src|href)=[\'"](?!(?:http|https|data|#|javascript|mailto))([^\'"]+)[\'"]', r'\1="' + original_url + r'\2"'),
-            (r'(src|href)=[\'"]//([^\'"]+)[\'"]', r'\1="https://\2"'),
-            (r'url\([\'"]?(?!(?:http|https|data|#))([^\)]+?)[\'"]?\)', r'url(' + original_url + r'\1)'),
-            (r'url\([\'"]?//([^\)]+?)[\'"]?\)', r'url(https://\1)')
+            # src, href属性のパターン
+            (r'(src|href)=[\'"]((?!(?:http:|https:|data:|#|javascript:|mailto:))([^\'"]+))[\'"]', 
+             lambda m: f'{m.group(1)}="{urljoin(base_url, m.group(2))}"'),
+            
+            # プロトコル相対URLのパターン
+            (r'(src|href)=[\'"]//([^\'"]+)[\'"]', 
+             r'\1="https://\2"'),
+             
+            # srcset属性のパターン
+            (r'srcset=[\'"](.*?)[\'"]', 
+             lambda m: 'srcset="' + process_srcset(m.group(1), base_url) + '"'),
+             
+            # CSSのurl()パターン 
+            (r'url\([\'"]?((?!(?:http:|https:|data:|#))([^\)\'"\s]+))[\'"]?\)', 
+             lambda m: f'url({urljoin(base_url, m.group(1))})')
         ]
         
+        # 変換処理
         for pattern, replacement in patterns:
             html_content = re.sub(pattern, replacement, html_content)
-            
+        
         return html_content
+    except Exception as e:
+        app.logger.error(f"最小限の置換エラー: {str(e)}")
+        # 例外発生時は元のHTMLをそのまま返す
+        return html_content
+
+# srcset属性内の複数URLを処理するヘルパー関数
+def process_srcset(srcset_value, base_url):
+    parts = srcset_value.split(',')
+    new_parts = []
+    
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+            
+        # URLと記述子（1x, 2x など）を分離
+        components = part.split()
+        if not components:
+            continue
+            
+        url = components[0]
+        
+        # URLの処理
+        if url.startswith('//'):
+            url = f"https:{url}"
+        elif not url.startswith(('http://', 'https://', 'data:', '#')):
+            url = urljoin(base_url, url)
+            
+        # 新しいURLと記述子を結合
+        new_part = url
+        if len(components) > 1:
+            new_part += ' ' + ' '.join(components[1:])
+            
+        new_parts.append(new_part)
+        
+    return ', '.join(new_parts)
 
 if __name__ == '__main__':
     app.run(debug=True) 
