@@ -176,10 +176,20 @@ window.addEventListener('DOMContentLoaded', function() {{
             
             // iframe内にTikTokスクリプトを安全に埋め込み
             setTimeout(function() {
-                var iframeDoc = iframe.contentWindow.document;
-                iframeDoc.open();
-                iframeDoc.write('""" + iframe_html.replace("'", "\\'") + """');
-                iframeDoc.close();
+                try {
+                    var iframeDoc = iframe.contentWindow.document;
+                    iframeDoc.open();
+                    iframeDoc.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><script>
+                    try {
+                        ${pixel_code.replace(/`/g, "\\`").replace(/\$/g, "\\$")}
+                    } catch(err) {
+                        console.error('TikTok Pixel実行エラー:', err);
+                    }
+                    </script></head><body></body></html>`);
+                    iframeDoc.close();
+                } catch(err) {
+                    console.error('[TikTok]: iframeドキュメント書き込みエラー', err);
+                }
             }, 1000);
         } catch(err) {
             // エラーを非表示にして、メインページに影響を与えないようにする
