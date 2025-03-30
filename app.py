@@ -118,34 +118,41 @@ def create():
             # iframeを使ってTikTok Pixelを隔離する方法 - CORSエラー修正対応
             pixel_script = f'''
 <!-- TikTok Pixel (iframe隔離版 - セキュリティ改善) -->
-<iframe id="tiktok-pixel-iframe" style="display:none;width:0;height:0;border:0;border:none;position:absolute;left:-9999px;" 
-        title="TikTok Pixel"></iframe>
 <script>
-// ページ読み込み完了後に実行
-window.addEventListener('load', function() {{
-    try {{
-        // TikTok Pixelコードを直接構築して実行（iframeを介さない安全な方法）
-        var script = document.createElement('script');
-        script.type = 'text/javascript';
-        script.innerHTML = `
+// ページの読み込みが完了した後にスクリプトを実行
+window.addEventListener('DOMContentLoaded', function() {{
+    // TikTok Pixelを含む非表示div要素を作成
+    var pixelContainer = document.createElement('div');
+    pixelContainer.id = 'tt-pixel-container';
+    pixelContainer.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;visibility:hidden;display:none;';
+    
+    // ピクセルコードを実行するスクリプト要素
+    var pixelScript = document.createElement('script');
+    pixelScript.type = 'text/javascript';
+    pixelScript.innerHTML = `
+        try {{
             !function (w, d, t) {{
                 w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}},ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
-                
+
                 ttq.load('{pixel_id}');
                 ttq.page();
             }}(window, document, 'ttq');
-        `;
-        
-        // スクリプトをピクセルコンテナに追加
-        var pixelContainer = document.createElement('div');
-        pixelContainer.id = 'tiktok-pixel-container';
-        pixelContainer.style.cssText = 'display:none!important;width:0!important;height:0!important;position:absolute!important;left:-9999px!important;';
-        pixelContainer.appendChild(script);
-        
-        // ドキュメントに追加
+        }} catch(err) {{
+            console.error('TikTok Pixel実行エラー:', err);
+        }}
+    `;
+    
+    // コンテナにスクリプトを追加
+    pixelContainer.appendChild(pixelScript);
+    
+    // bodyの最後に追加
+    if (document.body) {{
         document.body.appendChild(pixelContainer);
-    }} catch(err) {{
-        console.error('TikTok Pixel初期化エラー:', err);
+    }} else {{
+        // bodyがまだない場合は遅延実行
+        window.addEventListener('load', function() {{
+            document.body.appendChild(pixelContainer);
+        }});
     }}
 }});
 </script>
@@ -154,41 +161,81 @@ window.addEventListener('load', function() {{
             # 通常の遅延読み込み方式 (CSS分離対策付き)
             pixel_script = f'''
 <!-- TikTok Pixel (遅延読み込み版) -->
-<style id="tiktok-pixel-isolation">
-/* TikTok Pixelによる外部への影響を防ぐためのスタイル隔離 */
-#tiktok-pixel-container {{
-    display: none !important;
-    width: 0 !important;
-    height: 0 !important;
+<style>
+/* TikTok Pixelのコンテナを非表示にする */
+#tt-pixel-container {{
     position: absolute !important;
-    left: -9999px !important;
-    top: -9999px !important;
-    opacity: 0 !important;
+    width: 1px !important;
+    height: 1px !important;
+    overflow: hidden !important;
+    clip: rect(0,0,0,0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+    padding: 0 !important;
+    margin: -1px !important;
     visibility: hidden !important;
-    pointer-events: none !important;
+    display: none !important;
 }}
 </style>
-<div id="tiktok-pixel-container">
-<script type="text/javascript" defer async>
-!function (w, d, t) {{{{
-  window.addEventListener('load', function() {{{{
-    w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{{{t[e]=function(){{{{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}}}}}}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{{{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}}}},ttq.load=function(e,n){{{{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}}}};
+<script>
+// ページの読み込みが完了した後にスクリプトを実行
+window.addEventListener('DOMContentLoaded', function() {{
+    // TikTok Pixelを含む非表示div要素を作成
+    var pixelContainer = document.createElement('div');
+    pixelContainer.id = 'tt-pixel-container';
+    
+    // ピクセルコードを実行するスクリプト要素
+    var pixelScript = document.createElement('script');
+    pixelScript.type = 'text/javascript';
+    pixelScript.innerHTML = `
+        try {{
+            !function (w, d, t) {{
+                w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}},ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
 
-    ttq.load('{pixel_id}');
-    ttq.page();
-  }});
-}}}}(window, document, 'ttq');
+                ttq.load('{pixel_id}');
+                ttq.page();
+            }}(window, document, 'ttq');
+        }} catch(err) {{
+            console.error('TikTok Pixel実行エラー:', err);
+        }}
+    `;
+    
+    // コンテナにスクリプトを追加
+    pixelContainer.appendChild(pixelScript);
+    
+    // 安全にDOMに追加
+    if (document.body) {{
+        document.body.appendChild(pixelContainer);
+    }} else {{
+        window.addEventListener('load', function() {{
+            document.body.appendChild(pixelContainer);
+        }});
+    }}
+}});
 </script>
-</div>
 '''
         
-        # HTMLをほぼそのまま維持する方法で挿入
-        # <head>タグを探してその終了直前にスクリプトを挿入
+        # 相対パスをコメントに記録
+        base_href = f'<!-- 元のURL: {original_url} -->'
+    
+        # メタデータを埋め込むためのスクリプト（埋め込みURLの元情報をデータとして保持）
+        metadata_script = f'''
+<!-- メタデータ情報（TikTok Pixelで参照） -->
+<script type="application/json" id="afitori-metadata">
+{{
+  "originalUrl": "{original_url}",
+  "pixelId": "{pixel_id}",
+  "generatedAt": "{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+  "protocol": "{urlparse(original_url).scheme}",
+  "domain": "{urlparse(original_url).netloc}"
+}}
+</script>
+'''
+        
+        # <head>タグを探してその終了直前にメタデータとピクセルスクリプトを挿入
         head_end_pos = html_content.find("</head>")
         if head_end_pos > 0:
-            # 相対パスをコメントに記録
-            base_href = f'<!-- 元のURL: {original_url} -->'
-            new_html = html_content[:head_end_pos] + base_href + pixel_script + html_content[head_end_pos:]
+            new_html = html_content[:head_end_pos] + base_href + metadata_script + pixel_script + html_content[head_end_pos:]
         else:
             # headタグが見つからない場合の処理
             head_start_pos = html_content.find("<head")
@@ -198,7 +245,7 @@ window.addEventListener('load', function() {{
                     insert_pos = head_start_end + 1
                     # 相対パスをコメントに記録
                     base_href = f'<!-- 元のURL: {original_url} -->'
-                    new_html = html_content[:insert_pos] + base_href + pixel_script + html_content[insert_pos:]
+                    new_html = html_content[:insert_pos] + base_href + metadata_script + pixel_script + html_content[insert_pos:]
                 else:
                     # HTMLタグを探してその直後に挿入
                     html_pos = html_content.find("<html")
@@ -207,16 +254,16 @@ window.addEventListener('load', function() {{
                         if html_end > 0:
                             insert_pos = html_end + 1
                             # 相対パスをコメントに記録
-                            new_html = html_content[:insert_pos] + "<head>" + f'<!-- 元のURL: {original_url} -->' + pixel_script + "</head>" + html_content[insert_pos:]
+                            new_html = html_content[:insert_pos] + "<head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + pixel_script + "</head>" + html_content[insert_pos:]
                         else:
                             # HTMLタグもない場合は先頭に挿入
-                            new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + pixel_script + "</head>" + html_content
+                            new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + pixel_script + "</head>" + html_content
                     else:
                         # HTMLタグもない場合は先頭に挿入
-                        new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + pixel_script + "</head>" + html_content
+                        new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + pixel_script + "</head>" + html_content
             else:
                 # headタグがない場合は先頭に挿入
-                new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + pixel_script + "</head>" + html_content
+                new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + pixel_script + "</head>" + html_content
         
         # 修正したHTMLを保存する前に相対パスを絶対パスに変換
         new_html = fix_relative_paths(new_html, base_domain, original_url)
@@ -292,6 +339,7 @@ html body iframe.ttq-transport-frame {
 <head>
 <meta charset="UTF-8">
 <!-- 元のURL: {original_url} -->
+{metadata_script}
 <!-- TikTok Pixel用スタイル隔離 -->
 <style id="tiktok-pixel-reset">
 /* TikTok Pixelが元のページスタイルに影響しないようにするリセット */
