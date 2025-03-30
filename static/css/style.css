@@ -1,24 +1,44 @@
 body {
     background-color: #f8f9fa;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.5;
 }
 
 .container {
     max-width: 1200px;
+    padding: 1rem;
 }
 
 .card {
     box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
     border-radius: 0.5rem;
     overflow: hidden;
+    transition: transform 0.2s, box-shadow 0.2s;
+    margin-bottom: 1.5rem;
+}
+
+.card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 0.25rem 0.5rem rgba(0, 0, 0, 0.1);
 }
 
 .card-header {
     background-color: #f8f9fa;
     border-bottom: 1px solid rgba(0, 0, 0, 0.125);
+    padding: 0.75rem 1rem;
+}
+
+.card-body {
+    padding: 1.25rem;
 }
 
 .table th {
     font-weight: 600;
+    vertical-align: middle;
+}
+
+.table td {
+    vertical-align: middle;
 }
 
 .text-truncate {
@@ -26,6 +46,25 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    display: inline-block;
+}
+
+.btn {
+    transition: all 0.2s;
+}
+
+.btn-primary {
+    background-color: #0d6efd;
+    border-color: #0d6efd;
+}
+
+.btn-primary:hover {
+    background-color: #0b5ed7;
+    border-color: #0a58ca;
+}
+
+.alert {
+    margin-bottom: 1.5rem;
 }
 
 /* レスポンシブ調整 */
@@ -37,5 +76,13 @@ body {
     .btn-sm {
         padding: 0.25rem 0.4rem;
         font-size: 0.75rem;
+    }
+
+    .card-title {
+        font-size: 1.25rem;
+    }
+
+    .container {
+        padding: 0.5rem;
     }
 } 
