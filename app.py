@@ -8,6 +8,9 @@ from datetime import datetime
 import time
 from functools import lru_cache
 from flask_caching import Cache
+from urllib.parse import urlparse
+from urllib.parse import urljoin
+import re
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev_key_for_testing')
@@ -97,6 +100,10 @@ def create():
         return redirect(url_for('index'))
     
     try:
+        # オリジナルURLからドメイン部分を抽出
+        parsed_url = urlparse(original_url)
+        base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        
         # オリジナルURLからHTMLを取得（キャッシュを使用）
         try:
             html_content = fetch_html_content(original_url)
@@ -108,53 +115,38 @@ def create():
         use_iframe = 'true' == request.form.get('use_iframe', 'false')
         
         if use_iframe:
-            # iframeを使ってTikTok Pixelを隔離する方法
+            # iframeを使ってTikTok Pixelを隔離する方法 - CORSエラー修正対応
             pixel_script = f'''
-<!-- TikTok Pixel (iframe隔離版) -->
+<!-- TikTok Pixel (iframe隔離版 - セキュリティ改善) -->
 <iframe id="tiktok-pixel-iframe" style="display:none;width:0;height:0;border:0;border:none;position:absolute;left:-9999px;" 
-        title="TikTok Pixel" sandbox="allow-scripts"></iframe>
+        title="TikTok Pixel"></iframe>
 <script>
 // ページ読み込み完了後に実行
 window.addEventListener('load', function() {{
-    // iframeへのアクセス
-    var iframe = document.getElementById('tiktok-pixel-iframe');
-    var iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-    
-    // iframeのドキュメントを初期化
-    iframeDoc.open();
-    iframeDoc.write(`
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <style>
-            /* リセットCSS - 親ページのスタイルに影響を与えないようにリセット */
-            html, body, div, span, applet, object, iframe, h1, h2, h3, h4, h5, h6, p, blockquote, pre, a, 
-            abbr, acronym, address, big, cite, code, del, dfn, em, img, ins, kbd, q, s, samp, small, 
-            strike, strong, sub, sup, tt, var, b, u, i, center, dl, dt, dd, ol, ul, li, fieldset, form, 
-            label, legend, table, caption, tbody, tfoot, thead, tr, th, td, article, aside, canvas, 
-            details, embed, figure, figcaption, footer, header, hgroup, menu, nav, output, ruby, section, 
-            summary, time, mark, audio, video {{
-                margin: 0;
-                padding: 0;
-                border: 0;
-                font-size: 100%;
-                font: inherit;
-                vertical-align: baseline;
-            }}
-            </style>
-            <script>
+    try {{
+        // TikTok Pixelコードを直接構築して実行（iframeを介さない安全な方法）
+        var script = document.createElement('script');
+        script.type = 'text/javascript';
+        script.innerHTML = `
             !function (w, d, t) {{
                 w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}},ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
                 
                 ttq.load('{pixel_id}');
                 ttq.page();
             }}(window, document, 'ttq');
-            <\/script>
-        </head>
-        <body></body>
-        </html>
-    `);
-    iframeDoc.close();
+        `;
+        
+        // スクリプトをピクセルコンテナに追加
+        var pixelContainer = document.createElement('div');
+        pixelContainer.id = 'tiktok-pixel-container';
+        pixelContainer.style.cssText = 'display:none!important;width:0!important;height:0!important;position:absolute!important;left:-9999px!important;';
+        pixelContainer.appendChild(script);
+        
+        // ドキュメントに追加
+        document.body.appendChild(pixelContainer);
+    }} catch(err) {{
+        console.error('TikTok Pixel初期化エラー:', err);
+    }}
 }});
 </script>
 '''
@@ -194,7 +186,9 @@ window.addEventListener('load', function() {{
         # <head>タグを探してその終了直前にスクリプトを挿入
         head_end_pos = html_content.find("</head>")
         if head_end_pos > 0:
-            new_html = html_content[:head_end_pos] + pixel_script + html_content[head_end_pos:]
+            # 相対パスをコメントに記録
+            base_href = f'<!-- 元のURL: {original_url} -->'
+            new_html = html_content[:head_end_pos] + base_href + pixel_script + html_content[head_end_pos:]
         else:
             # headタグが見つからない場合の処理
             head_start_pos = html_content.find("<head")
@@ -202,7 +196,9 @@ window.addEventListener('load', function() {{
                 head_start_end = html_content.find(">", head_start_pos)
                 if head_start_end > 0:
                     insert_pos = head_start_end + 1
-                    new_html = html_content[:insert_pos] + pixel_script + html_content[insert_pos:]
+                    # 相対パスをコメントに記録
+                    base_href = f'<!-- 元のURL: {original_url} -->'
+                    new_html = html_content[:insert_pos] + base_href + pixel_script + html_content[insert_pos:]
                 else:
                     # HTMLタグを探してその直後に挿入
                     html_pos = html_content.find("<html")
@@ -210,16 +206,20 @@ window.addEventListener('load', function() {{
                         html_end = html_content.find(">", html_pos)
                         if html_end > 0:
                             insert_pos = html_end + 1
-                            new_html = html_content[:insert_pos] + "<head>" + pixel_script + "</head>" + html_content[insert_pos:]
+                            # 相対パスをコメントに記録
+                            new_html = html_content[:insert_pos] + "<head>" + f'<!-- 元のURL: {original_url} -->' + pixel_script + "</head>" + html_content[insert_pos:]
                         else:
                             # HTMLタグもない場合は先頭に挿入
-                            new_html = "<!DOCTYPE html><html><head>" + pixel_script + "</head>" + html_content
+                            new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + pixel_script + "</head>" + html_content
                     else:
                         # HTMLタグもない場合は先頭に挿入
-                        new_html = "<!DOCTYPE html><html><head>" + pixel_script + "</head>" + html_content
+                        new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + pixel_script + "</head>" + html_content
             else:
                 # headタグがない場合は先頭に挿入
-                new_html = "<!DOCTYPE html><html><head>" + pixel_script + "</head>" + html_content
+                new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + pixel_script + "</head>" + html_content
+        
+        # 修正したHTMLを保存する前に相対パスを絶対パスに変換
+        new_html = fix_relative_paths(new_html, base_domain, original_url)
         
         # 一意のファイル名を生成
         file_id = str(uuid.uuid4())
@@ -251,19 +251,22 @@ window.addEventListener('load', function() {{
     pointer-events: none !important;
 }
 
-/* TikTok Pixelスクリプトからの影響を防ぐ */
-body, div, span, h1, h2, h3, h4, h5, h6, p, a, img, ul, ol, li, form, label, 
-table, tbody, tfoot, thead, tr, th, td {
-    font-family: initial !important;
-    font-size: initial !important;
-    font-weight: initial !important;
-    line-height: initial !important;
-    color: initial !important;
-    background: initial !important;
-    margin: initial !important;
-    padding: initial !important;
-    border: initial !important;
-    text-align: initial !important;
+/* 保護スタイル - オリジナルコンテンツのスタイルが維持されるように特定のTikTokスタイルだけを上書き */
+/* ttqが挿入する可能性のあるスタイルを選択的に無効化 */
+html body div.ttq-loading, 
+html body div.ttq-confirm,
+html body div.ttq-pixel-base,
+html body iframe.ttq-transport-frame {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    position: absolute !important;
+    left: -9999px !important;
+    top: -9999px !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
 }
 </style>'''
                 
@@ -288,6 +291,7 @@ table, tbody, tfoot, thead, tr, th, td {
 <html>
 <head>
 <meta charset="UTF-8">
+<!-- 元のURL: {original_url} -->
 <!-- TikTok Pixel用スタイル隔離 -->
 <style id="tiktok-pixel-reset">
 /* TikTok Pixelが元のページスタイルに影響しないようにするリセット */
@@ -304,19 +308,22 @@ table, tbody, tfoot, thead, tr, th, td {
     pointer-events: none !important;
 }
 
-/* TikTok Pixelスクリプトからの影響を防ぐ */
-body, div, span, h1, h2, h3, h4, h5, h6, p, a, img, ul, ol, li, form, label, 
-table, tbody, tfoot, thead, tr, th, td {
-    font-family: initial !important;
-    font-size: initial !important;
-    font-weight: initial !important;
-    line-height: initial !important;
-    color: initial !important;
-    background: initial !important;
-    margin: initial !important;
-    padding: initial !important;
-    border: initial !important;
-    text-align: initial !important;
+/* 保護スタイル - オリジナルコンテンツのスタイルが維持されるように特定のTikTokスタイルだけを上書き */
+/* ttqが挿入する可能性のあるスタイルを選択的に無効化 */
+html body div.ttq-loading, 
+html body div.ttq-confirm,
+html body div.ttq-pixel-base,
+html body iframe.ttq-transport-frame {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    position: absolute !important;
+    left: -9999px !important;
+    top: -9999px !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
 }
 </style>
 <title>Redirected Content</title>
@@ -434,6 +441,106 @@ def clear_cache():
         return "キャッシュをクリアしました", 200
     except Exception as e:
         return f"エラー: {str(e)}", 500
+
+# 相対パスを絶対パスに変換する関数
+def fix_relative_paths(html_content, base_domain, original_url):
+    """HTMLコンテンツ内の相対パスを絶対パスに変換する"""
+    try:
+        # HTMLパースを試みる
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # src属性の修正
+        for tag in soup.find_all(attrs={"src": True}):
+            if tag['src'].startswith('//'):
+                # プロトコル相対URLの場合
+                tag['src'] = f"https:{tag['src']}"
+            elif not tag['src'].startswith(('http://', 'https://', 'data:', '#')):
+                # 相対パスの場合
+                tag['src'] = urljoin(original_url, tag['src'])
+        
+        # href属性の修正
+        for tag in soup.find_all(attrs={"href": True}):
+            if tag['href'].startswith('//'):
+                # プロトコル相対URLの場合
+                tag['href'] = f"https:{tag['href']}"
+            elif not tag['href'].startswith(('http://', 'https://', 'data:', '#', 'javascript:', 'mailto:')):
+                # 相対パスの場合
+                tag['href'] = urljoin(original_url, tag['href'])
+        
+        # srcset属性の修正
+        for tag in soup.find_all(attrs={"srcset": True}):
+            srcset = tag['srcset']
+            # スペースで分割し、URLとサイズ指定部分に分ける
+            parts = srcset.split(',')
+            new_parts = []
+            for part in parts:
+                part = part.strip()
+                if not part:
+                    continue
+                # URLと記述子（1x, 2x など）を分離
+                url_parts = part.split(' ')
+                url = url_parts[0]
+                if url.startswith('//'):
+                    url = f"https:{url}"
+                elif not url.startswith(('http://', 'https://', 'data:', '#')):
+                    url = urljoin(original_url, url)
+                url_parts[0] = url
+                new_parts.append(' '.join(url_parts))
+            tag['srcset'] = ', '.join(new_parts)
+        
+        # スタイルシート内のURLを修正
+        for style_tag in soup.find_all('style'):
+            if style_tag.string:
+                # url() パターンを検索して絶対パスに変換
+                style_content = style_tag.string
+                # url(...) パターンを抽出
+                url_pattern = re.compile(r'url\([\'"]?([^\'")]+)[\'"]?\)')
+                
+                def replace_url(match):
+                    url = match.group(1)
+                    if url.startswith('//'):
+                        return f"url(https:{url})"
+                    elif not url.startswith(('http://', 'https://', 'data:', '#')):
+                        return f"url({urljoin(original_url, url)})"
+                    else:
+                        return match.group(0)
+                
+                style_tag.string = url_pattern.sub(replace_url, style_content)
+                
+        # インラインスタイルのURLを修正
+        for tag in soup.find_all(attrs={"style": True}):
+            style_content = tag['style']
+            # url() パターンを抽出
+            url_pattern = re.compile(r'url\([\'"]?([^\'")]+)[\'"]?\)')
+            
+            def replace_url(match):
+                url = match.group(1)
+                if url.startswith('//'):
+                    return f"url(https:{url})"
+                elif not url.startswith(('http://', 'https://', 'data:', '#')):
+                    return f"url({urljoin(original_url, url)})"
+                else:
+                    return match.group(0)
+            
+            tag['style'] = url_pattern.sub(replace_url, style_content)
+            
+        return str(soup)
+    except Exception as e:
+        # HTMLパースに失敗した場合は、正規表現でのみ置換を試みる
+        app.logger.error(f"HTMLパースエラー: {str(e)}、正規表現で置換を試みます")
+        
+        # 基本的な属性の置換パターン
+        patterns = [
+            (r'(src|href)=[\'"](?!(?:http|https|data|#|javascript|mailto))([^\'"]+)[\'"]', r'\1="' + original_url + r'\2"'),
+            (r'(src|href)=[\'"]//([^\'"]+)[\'"]', r'\1="https://\2"'),
+            (r'url\([\'"]?(?!(?:http|https|data|#))([^\)]+?)[\'"]?\)', r'url(' + original_url + r'\1)'),
+            (r'url\([\'"]?//([^\)]+?)[\'"]?\)', r'url(https://\1)')
+        ]
+        
+        for pattern, replacement in patterns:
+            html_content = re.sub(pattern, replacement, html_content)
+            
+        return html_content
 
 if __name__ == '__main__':
     app.run(debug=True) 
