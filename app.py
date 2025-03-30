@@ -246,9 +246,6 @@ def create():
             # 楽天特有の文字化けパターン
             html_content = re.sub(r'Rakuten\s+[Ff]ashion', '楽天ファッション', html_content)
         
-        # スクリプト隔離用のiframeを使うかどうかの判定
-        use_iframe = 'true' == request.form.get('use_iframe', 'false')
-        
         # 提供されたPixelコードを直接使用する
         # スクリプトタグを削除して純粋なJSコードのみ抽出
         pixel_code = pixel_code.strip()
@@ -258,89 +255,8 @@ def create():
             if start_idx > 0 and end_idx > start_idx:
                 pixel_code = pixel_code[start_idx:end_idx].strip()
         
-        if use_iframe:
-            # iframeを使用する場合、Pixelコードをiframe内に隔離
-            iframe_html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><script>
-window.addEventListener('DOMContentLoaded', function() {{
-    try {{
-        {pixel_code}
-    }} catch(err) {{
-        console.error('TikTok Pixel実行エラー:', err);
-    }}
-}});
-</script></head><body></body></html>"""
-            
-            pixel_script = """
-<!-- TikTok Pixel (iframe隔離版 - 完全分離) -->
-<script type="text/javascript">
-// ページが完全に読み込まれてからピクセルを実行
-(function() {
-    // メインページの読み込み完了後に実行することで競合を防ぐ
-    function injectTikTokPixel() {
-        try {
-            // スクリプト要素をdocument.headに直接追加しない隔離コンテナを作成
-            var container = document.createElement('div');
-            container.id = 'tiktok-pixel-container';
-            container.style.cssText = 'position:absolute!important;top:-9999px!important;left:-9999px!important;width:0!important;height:0!important;opacity:0!important;pointer-events:none!important;overflow:hidden!important;visibility:hidden!important;display:block!important;';
-            
-            // iframe要素を作成して隔離環境を提供
-            var iframe = document.createElement('iframe');
-            iframe.title = "TikTok Pixel";
-            iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-            iframe.style.cssText = 'position:absolute!important;top:-9999px!important;left:-9999px!important;width:0!important;height:0!important;border:0!important;opacity:0!important;pointer-events:none!important;overflow:hidden!important;visibility:hidden!important;display:block!important;';
-            iframe.setAttribute('aria-hidden', 'true');
-            
-            // コンテナにiframeを追加し、headに配置（bodyではなく）
-            container.appendChild(iframe);
-            if (document.head) {
-                document.head.appendChild(container);
-            } else {
-                document.addEventListener('DOMContentLoaded', function() {
-                    if (document.head) {
-                        document.head.appendChild(container);
-                    }
-                });
-            }
-            
-            // iframe内にTikTokスクリプトを安全に埋め込み
-            setTimeout(function() {
-                try {
-                    var iframeDoc = iframe.contentWindow.document;
-                    iframeDoc.open();
-                    iframeDoc.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><script>
-                    try {
-                        """ + pixel_code.replace("/`/g", "\\`").replace("/$/g", "\\$") + """
-                    } catch(err) {
-                        console.error('TikTok Pixel実行エラー:', err);
-                    }
-                    </script></head><body></body></html>`);
-                    iframeDoc.close();
-                } catch(err) {
-                    console.error('[TikTok]: iframeドキュメント書き込みエラー', err);
-                }
-            }, 1000);
-        } catch(err) {
-            // エラーを非表示にして、メインページに影響を与えないようにする
-            console.error('[TikTok]: Pixel設定エラー', err);
-        }
-    }
-
-    // ページの読み込みステータスに応じた実行タイミング制御
-    if (document.readyState === 'complete') {
-        // すでにページが読み込み完了している場合
-        setTimeout(injectTikTokPixel, 2000);
-    } else {
-        // ページ読み込み完了後に実行
-        window.addEventListener('load', function() {
-            setTimeout(injectTikTokPixel, 2000);
-        });
-    }
-})();
-</script>
-"""
-        else:
-            # 通常の非表示要素方式（直接コードを使用）
-            pixel_script = """
+        # 通常の非表示要素方式（直接コードを使用）
+        pixel_script = """
 <!-- TikTok Pixel（非表示要素方式） -->
 <script type="text/javascript">
 // ピクセルコードは独立したスコープで実行し、グローバル変数の競合を防ぐ
