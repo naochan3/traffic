@@ -801,10 +801,187 @@ def view(file_id):
             head_end_pos = html_content.find('</head>')
             if head_end_pos > 0:
                 html_content = html_content[:head_end_pos] + '<meta charset="UTF-8">\n' + html_content[head_end_pos:]
+            else:
+                # headタグが見つからない場合は先頭に追加
+                html_content = '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8">\n</head>\n<body>\n' + html_content + '\n</body>\n</html>'
         else:
             # 既存のcharset指定をUTF-8に統一
             charset_pattern = re.compile(r'<meta[^>]*charset=[\'"](.*?)[\'"][^>]*>', re.IGNORECASE)
             html_content = charset_pattern.sub('<meta charset="UTF-8">', html_content)
+        
+        # CSSデバッグ用のスクリプトを追加
+        css_debug_script = """
+<script>
+// CSS診断ツール - デバッグモード
+(function() {
+    function addCssDebugger() {
+        try {
+            // CSS問題診断用のツールバーを作成
+            var debugBar = document.createElement('div');
+            debugBar.id = 'css-debug-toolbar';
+            debugBar.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:rgba(0,0,0,0.8);color:#fff;z-index:999999;padding:8px;font-family:sans-serif;font-size:12px;text-align:left;box-shadow:0 -2px 10px rgba(0,0,0,0.3);';
+            
+            // ボタンと情報表示エリアを追加
+            debugBar.innerHTML = `
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                        <button id="debug-toggle-animations" style="margin-right:10px;padding:3px 8px;background:#f44336;border:none;color:#fff;border-radius:3px;cursor:pointer;">アニメーション停止</button>
+                        <button id="debug-highlight-css" style="margin-right:10px;padding:3px 8px;background:#2196F3;border:none;color:#fff;border-radius:3px;cursor:pointer;">CSSハイライト</button>
+                        <button id="debug-show-styles" style="padding:3px 8px;background:#4CAF50;border:none;color:#fff;border-radius:3px;cursor:pointer;">スタイル検査</button>
+                    </div>
+                    <div id="debug-info" style="color:#fff;font-family:monospace;">デバッグモード</div>
+                    <button id="debug-close" style="background:none;border:none;color:#fff;font-size:16px;cursor:pointer;">×</button>
+                </div>
+                <div id="debug-output" style="margin-top:8px;max-height:200px;overflow:auto;display:none;background:rgba(0,0,0,0.5);padding:5px;border-radius:3px;"></div>
+            `;
+            
+            // ボディの最後に追加
+            document.body.appendChild(debugBar);
+            
+            // ボタンのイベントリスナーを設定
+            document.getElementById('debug-toggle-animations').addEventListener('click', function() {
+                var btn = this;
+                var allAnimations = [];
+                
+                // すべてのスタイルシートのアニメーションルールを取得
+                for (var i = 0; i < document.styleSheets.length; i++) {
+                    try {
+                        var sheet = document.styleSheets[i];
+                        var rules = sheet.cssRules || sheet.rules;
+                        if (!rules) continue;
+                        
+                        for (var j = 0; j < rules.length; j++) {
+                            var rule = rules[j];
+                            // CSSアニメーションを検出
+                            if (rule.type === CSSRule.KEYFRAMES_RULE || 
+                                rule.cssText && rule.cssText.indexOf('@keyframes') >= 0) {
+                                allAnimations.push({
+                                    name: rule.name,
+                                    cssText: rule.cssText
+                                });
+                            }
+                        }
+                    } catch(e) {
+                        console.error('CSSルール読み取りエラー:', e);
+                    }
+                }
+                
+                // アニメーションの停止と再開を切り替え
+                var style = document.createElement('style');
+                if (btn.textContent === 'アニメーション停止') {
+                    style.textContent = '*, *::before, *::after { animation-play-state: paused !important; transition: none !important; }';
+                    document.head.appendChild(style);
+                    style.id = 'debug-animation-pause';
+                    btn.textContent = 'アニメーション再開';
+                    btn.style.background = '#4CAF50';
+                    
+                    // アニメーションリストを表示
+                    var output = document.getElementById('debug-output');
+                    output.style.display = 'block';
+                    output.innerHTML = '<h4>検出されたアニメーション:</h4><ul style="margin:0;padding-left:20px;">' + 
+                        allAnimations.map(function(anim) {
+                            return '<li style="margin-bottom:5px;">' + anim.name + '</li>';
+                        }).join('') + '</ul>';
+                    
+                    document.getElementById('debug-info').textContent = 'アニメーション一時停止中 (' + allAnimations.length + '個検出)';
+                } else {
+                    var pauseStyle = document.getElementById('debug-animation-pause');
+                    if (pauseStyle) pauseStyle.remove();
+                    btn.textContent = 'アニメーション停止';
+                    btn.style.background = '#f44336';
+                    document.getElementById('debug-info').textContent = 'アニメーション実行中';
+                    document.getElementById('debug-output').style.display = 'none';
+                }
+            });
+            
+            document.getElementById('debug-highlight-css').addEventListener('click', function() {
+                var btn = this;
+                var highlightStyle = document.getElementById('debug-highlight-style');
+                
+                if (!highlightStyle) {
+                    // 各要素に枠線を付けて表示
+                    highlightStyle = document.createElement('style');
+                    highlightStyle.id = 'debug-highlight-style';
+                    highlightStyle.textContent = `
+                        * { outline: 1px solid rgba(255,0,0,0.2) !important; }
+                        *:hover { outline: 2px solid rgba(255,0,0,0.8) !important; background: rgba(255,0,0,0.1) !important; }
+                    `;
+                    document.head.appendChild(highlightStyle);
+                    btn.textContent = 'ハイライト解除';
+                    btn.style.background = '#ff9800';
+                    document.getElementById('debug-info').textContent = 'CSS要素ハイライト表示中';
+                } else {
+                    highlightStyle.remove();
+                    btn.textContent = 'CSSハイライト';
+                    btn.style.background = '#2196F3';
+                    document.getElementById('debug-info').textContent = 'デバッグモード';
+                }
+            });
+            
+            document.getElementById('debug-show-styles').addEventListener('click', function() {
+                var output = document.getElementById('debug-output');
+                output.style.display = output.style.display === 'none' ? 'block' : 'none';
+                
+                if (output.style.display === 'block') {
+                    // 外部スタイルシートの情報を収集
+                    var styleInfo = [];
+                    for (var i = 0; i < document.styleSheets.length; i++) {
+                        try {
+                            var sheet = document.styleSheets[i];
+                            styleInfo.push({
+                                href: sheet.href || 'インライン',
+                                rules: sheet.cssRules ? sheet.cssRules.length : 0,
+                                disabled: sheet.disabled
+                            });
+                        } catch(e) {
+                            styleInfo.push({
+                                href: sheet.href || 'インラインCORS制限',
+                                error: e.message,
+                                disabled: sheet.disabled
+                            });
+                        }
+                    }
+                    
+                    output.innerHTML = '<h4>CSS情報:</h4><ul style="margin:0;padding-left:20px;">' + 
+                        styleInfo.map(function(info) {
+                            var status = info.disabled ? '無効' : '有効';
+                            var error = info.error ? ' - エラー: ' + info.error : '';
+                            var rules = info.rules !== undefined ? ' (' + info.rules + 'ルール)' : '';
+                            return '<li style="margin-bottom:5px;">' + info.href + rules + ' - ' + status + error + '</li>';
+                        }).join('') + '</ul>';
+                }
+            });
+            
+            // 閉じるボタン
+            document.getElementById('debug-close').addEventListener('click', function() {
+                var debugBar = document.getElementById('css-debug-toolbar');
+                if (debugBar) debugBar.remove();
+                
+                // 追加したスタイルも削除
+                var pauseStyle = document.getElementById('debug-animation-pause');
+                if (pauseStyle) pauseStyle.remove();
+                
+                var highlightStyle = document.getElementById('debug-highlight-style');
+                if (highlightStyle) highlightStyle.remove();
+            });
+            
+            console.log('CSS診断ツール初期化完了');
+        } catch(err) {
+            console.error('CSS診断ツール初期化エラー:', err);
+        }
+    }
+
+    // DOMの準備ができたらデバッガーを追加
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        setTimeout(addCssDebugger, 1000);
+    } else {
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(addCssDebugger, 1000);
+        });
+    }
+})();
+</script>
+        """
         
         # TikTokピクセル用のスクリプト
         tiktok_pixel_script = f"""
@@ -851,17 +1028,17 @@ def view(file_id):
         # TikTokピクセルコードをheadタグに追加
         head_end_pos = html_content.find('</head>')
         if head_end_pos != -1:
-            html_content = html_content[:head_end_pos] + tiktok_pixel_script + html_content[head_end_pos:]
+            html_content = html_content[:head_end_pos] + tiktok_pixel_script + css_debug_script + html_content[head_end_pos:]
         else:
             # headタグがない場合はbodyタグの直後に挿入
             body_start_pos = html_content.find('<body')
             if body_start_pos != -1:
                 body_end_bracket = html_content.find('>', body_start_pos)
                 if body_end_bracket != -1:
-                    html_content = html_content[:body_end_bracket + 1] + tiktok_pixel_script + html_content[body_end_bracket + 1:]
+                    html_content = html_content[:body_end_bracket + 1] + tiktok_pixel_script + css_debug_script + html_content[body_end_bracket + 1:]
             else:
                 # どちらもない場合はHTMLの先頭に追加
-                html_content = tiktok_pixel_script + html_content
+                html_content = tiktok_pixel_script + css_debug_script + html_content
         
         # クリック数を更新
         update_click_count(file_id)
