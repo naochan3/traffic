@@ -153,5 +153,9 @@ def delete(file_id):
     flash('URLが正常に削除されました！', 'success')
     return redirect(url_for('index'))
 
+def lambda_handler(event, context):
+    """AWS Lambda / Netlify Function handler."""
+    return FlaskServerless(app).handle(event, context)
+
 # Netlify Functions用のハンドラー
-handler = FlaskServerless(app) 
+handler = lambda_handler 
