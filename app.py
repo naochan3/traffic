@@ -30,6 +30,9 @@ if os.environ.get('VERCEL_ENV') == 'production':
 else:
     URLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'urls')
 
+# アップロードフォルダをapp.configに設定
+app.config['UPLOAD_FOLDER'] = URLS_DIR
+
 if not os.path.exists(URLS_DIR):
     os.makedirs(URLS_DIR)
 
@@ -1000,6 +1003,35 @@ def process_srcset(srcset_value, base_url):
         new_parts.append(new_part)
         
     return ', '.join(new_parts)
+
+# クリック数を更新する関数
+def update_click_count(file_id):
+    """URLのクリック数を更新する"""
+    try:
+        url_list = get_url_list()
+        for url in url_list:
+            if url.get('id') == file_id:
+                # クリック数がない場合は初期化
+                if 'clicks' not in url:
+                    url['clicks'] = 0
+                # クリック数を増加
+                url['clicks'] += 1
+                # 最終アクセス日時を更新
+                url['last_accessed'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                save_url_list(url_list)
+                break
+    except Exception as e:
+        app.logger.error(f"クリック数更新エラー: {str(e)}")
+
+# 設定を取得する関数
+def get_config():
+    """アプリケーション設定を取得する"""
+    # 将来的に設定ファイルから読み込むなどの対応が可能
+    return {
+        'site_name': 'URL変換サービス',
+        'default_ttl': 86400 * 30,  # 30日
+        'max_urls': 100
+    }
 
 if __name__ == '__main__':
     app.run(debug=True) 
