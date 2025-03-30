@@ -116,140 +116,167 @@ def create():
         
         if use_iframe:
             # iframeを使ってTikTok Pixelを隔離する方法 - CORSエラー修正対応
-            pixel_script = f'''
-<!-- TikTok Pixel (iframe隔離版 - セキュリティ改善) -->
-<script type="text/javascript">
-// ページの完全読み込み後にTikTokスクリプトを実行（遅延実行による競合防止）
-window.addEventListener('load', function() {{
-    setTimeout(function() {{
-        try {{
-            // メインのDOM操作やアニメーションが完了するまで待機
-            var pixelContainer = document.createElement('div');
-            pixelContainer.id = 'tiktok-pixel-container';
-            pixelContainer.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;visibility:hidden;display:none;';
+            iframe_template = """<!DOCTYPE html><html><head><meta charset="UTF-8"><script>
+window.addEventListener('DOMContentLoaded', function() {{
+    try {{
+        !function (w, d, t) {{
+            w.TiktokAnalyticsObject=t;
+            var ttq=w[t]=w[t]||[];
+            ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"];
+            ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};
+            for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);
+            ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}};
+            ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
+            ttq.load('{0}');
+            ttq.page();
+        }}(window, document, 'ttq');
+    }} catch(err) {{
+        console.error('TikTok Pixel実行エラー:', err);
+    }}
+}});
+</script></head><body></body></html>"""
             
-            // スクリプトをiframe内に隔離して実行
+            iframe_html = iframe_template.format(pixel_id)
+            
+            pixel_script = """
+<!-- TikTok Pixel (iframe隔離版 - 完全分離) -->
+<script type="text/javascript">
+// ページが完全に読み込まれてからピクセルを実行
+(function() {
+    // メインページの読み込み完了後に実行することで競合を防ぐ
+    function injectTikTokPixel() {
+        try {
+            // スクリプト要素をdocument.headに直接追加しない隔離コンテナを作成
+            var container = document.createElement('div');
+            container.id = 'tiktok-pixel-container';
+            container.style.cssText = 'display:none!important;width:0!important;height:0!important;opacity:0!important;pointer-events:none!important;position:absolute!important;';
+            
+            // iframe要素を作成して隔離環境を提供
             var iframe = document.createElement('iframe');
             iframe.title = "TikTok Pixel";
-            iframe.style.cssText = 'width:1px;height:1px;position:absolute;display:none;';
             iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+            iframe.style.cssText = 'border:0!important;width:0!important;height:0!important;display:none!important;';
             
-            // pixelコンテナにiframeを追加
-            pixelContainer.appendChild(iframe);
-            document.body.appendChild(pixelContainer);
+            // コンテナにiframeを追加し、bodyの最後に配置
+            container.appendChild(iframe);
+            document.body.appendChild(container);
             
-            // iframe内にTikTokスクリプトを埋め込み
+            // iframe内にTikTokスクリプトを安全に埋め込み
             var iframeDoc = iframe.contentWindow.document;
             iframeDoc.open();
-            iframeDoc.write(`
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <meta charset="UTF-8">
-                    <script>
-                        try {{
-                            !function (w, d, t) {{
-                                w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"];
-                                ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};
-                                for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);
-                                ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}};
-                                ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
-                            
-                                ttq.load('{pixel_id}');
-                                ttq.page();
-                            }}(window, document, 'ttq');
-                        }} catch(err) {{
-                            console.error('TikTok Pixel実行エラー (隔離モード):', err);
-                        }}
-                    </script>
-                </head>
-                <body></body>
-                </html>
-            `);
+            iframeDoc.write('""" + iframe_html.replace("'", "\\'") + """');
             iframeDoc.close();
-        }} catch(err) {{
-            console.error('TikTok Pixel設定エラー:', err);
-        }}
-    }}, 2000); // ページロード後2秒待機してから実行
-}});
+        } catch(err) {
+            // エラーを非表示にして、メインページに影響を与えないようにする
+            console.error('[TikTok]: Pixel設定エラー', err);
+        }
+    }
+
+    // ページの読み込みステータスに応じた実行タイミング制御
+    if (document.readyState === 'complete') {
+        // すでにページが読み込み完了している場合
+        setTimeout(injectTikTokPixel, 2000);
+    } else {
+        // ページ読み込み完了後に実行
+        window.addEventListener('load', function() {
+            setTimeout(injectTikTokPixel, 2000);
+        });
+    }
+})();
 </script>
-'''
+"""
         else:
-            # 通常の遅延読み込み方式 (改良版 - JavaScriptとCSSの衝突防止)
-            pixel_script = f'''
-<!-- TikTok Pixel (改良版遅延読み込み) -->
+            # 通常の遅延読み込み方式（非表示要素として実装）
+            js_template = """(function(w, d, t) {
+    try {
+        w.TiktokAnalyticsObject=t;
+        var ttq=w[t]=w[t]||[];
+        ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"];
+        ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};
+        for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);
+        ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e};
+        ttq.load=function(e,n){var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)};
+        
+        ttq.load('{0}');
+        ttq.page();
+    } catch(err) {
+        console.error('[TikTok]: Pixel実行エラー', err);
+    }
+})(window, document, 'ttq');"""
+            
+            js_content = js_template.format(pixel_id)
+            
+            pixel_script = """
+<!-- TikTok Pixel（非表示要素方式） -->
 <script type="text/javascript">
-// 本スクリプトはページ読み込み完了後のみ実行し、サイトのパフォーマンスに影響を与えないようにします
-window.addEventListener('load', function() {{
-    // メインコンテンツ読み込み完了後に遅延実行
-    setTimeout(function() {{
-        try {{
-            // 隔離コンテナを作成
+// ピクセルコードは独立したスコープで実行し、グローバル変数の競合を防ぐ
+(function() {
+    // ページが完全に読み込まれてから実行することで、DOM操作の競合を防ぐ
+    function loadTikTokPixel() {
+        try {
+            // 非表示コンテナ作成（CSS競合を防ぐために独立した要素を使用）
             var pixelContainer = document.createElement('div');
             pixelContainer.id = 'tiktok-pixel-container';
             pixelContainer.setAttribute('aria-hidden', 'true');
-            pixelContainer.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;visibility:hidden;display:none;';
+            pixelContainer.style.cssText = 'position:absolute!important;width:0!important;height:0!important;overflow:hidden!important;opacity:0!important;pointer-events:none!important;display:none!important;';
             
-            // 非同期スクリプト要素を作成
+            // TikTok Pixelコードを実行するスクリプト要素（非同期ロード）
             var pixelScript = document.createElement('script');
             pixelScript.type = 'text/javascript';
             pixelScript.async = true;
             
-            // 独立したスコープでピクセルコードを実行
-            pixelScript.innerHTML = `
-                (function(w, d, t) {{
-                    try {{
-                        w.TiktokAnalyticsObject=t;
-                        var ttq=w[t]=w[t]||[];
-                        ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"];
-                        ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};
-                        for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);
-                        ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}};
-                        ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
-                    
-                        ttq.load('{pixel_id}');
-                        ttq.page();
-                    }} catch(err) {{
-                        console.error('TikTok Pixel実行エラー:', err);
-                    }}
-                }})(window, document, 'ttq');
-            `;
+            // 独立スコープ内でコードを実行し、グローバル名前空間の汚染を防ぐ
+            pixelScript.textContent = '""" + js_content.replace("'", "\\'") + """';
             
-            // DOM操作の隔離
+            // コンテナにスクリプトを追加し、DOMに安全に挿入
             pixelContainer.appendChild(pixelScript);
             
-            // 安全にDOMに追加 (ブロッキングしないよう非同期で)
-            if (document.body) {{
+            if (document.body) {
                 document.body.appendChild(pixelContainer);
-            }} else {{
-                document.addEventListener('DOMContentLoaded', function() {{
-                    document.body.appendChild(pixelContainer);
-                }});
-            }}
-        }} catch(err) {{
-            console.error('TikTok Pixel設定エラー:', err);
-        }}
-    }}, 2000); // 2秒遅延でサイトのメイン機能を妨げない
-}});
+            } else {
+                // ボディが存在しない場合は遅延して再試行
+                document.addEventListener('DOMContentLoaded', function() {
+                    if (document.body) {
+                        document.body.appendChild(pixelContainer);
+                    }
+                });
+            }
+        } catch(err) {
+            // エラーをサイレントに処理（ユーザーに表示されないよう）
+            console.error('[TikTok]: Pixel設定エラー', err);
+        }
+    }
+    
+    // ページの読み込みステータスに応じた実行タイミング制御
+    if (document.readyState === 'complete') {
+        // すでにページが読み込み完了している場合
+        setTimeout(loadTikTokPixel, 2000);
+    } else {
+        // ページ読み込み完了後に実行
+        window.addEventListener('load', function() {
+            setTimeout(loadTikTokPixel, 2000);
+        });
+    }
+})();
 </script>
-'''
+"""
         
         # 相対パスをコメントに記録
-        base_href = f'<!-- 元のURL: {original_url} -->'
+        base_href = '<!-- 元のURL: {0} -->'.format(original_url)
     
         # メタデータを埋め込むためのスクリプト（埋め込みURLの元情報をデータとして保持）
-        metadata_script = f'''
+        metadata_script = """
 <!-- メタデータ情報（TikTok Pixelで参照） -->
 <script type="application/json" id="afitori-metadata">
 {{
-  "originalUrl": "{original_url}",
-  "pixelId": "{pixel_id}",
-  "generatedAt": "{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-  "protocol": "{urlparse(original_url).scheme}",
-  "domain": "{urlparse(original_url).netloc}"
+  "originalUrl": "{0}",
+  "pixelId": "{1}",
+  "generatedAt": "{2}",
+  "protocol": "{3}",
+  "domain": "{4}"
 }}
 </script>
-'''
+""".format(original_url, pixel_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), urlparse(original_url).scheme, urlparse(original_url).netloc)
         
         # <head>タグを探してその終了直前にメタデータとピクセルスクリプトを挿入
         head_end_pos = html_content.find("</head>")
