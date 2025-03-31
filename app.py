@@ -11,6 +11,14 @@ from flask_caching import Cache
 from urllib.parse import urlparse
 from urllib.parse import urljoin
 import re
+import asyncio
+import aiohttp
+from dotenv import load_dotenv
+import base64
+import hashlib
+
+# 環境変数をロード
+load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev_key_for_testing')
@@ -23,8 +31,8 @@ cache_config = {
 }
 cache = Cache(app, config=cache_config)
 
-# URLsの保存先ディレクトリ
-# Vercelは読み書き可能な/tmpディレクトリを提供
+# 一時的な互換性のためにURLSディレクトリを維持
+# 将来的には完全に削除し、Vercel KV/Blobに移行
 if os.environ.get('VERCEL_ENV') == 'production':
     URLS_DIR = '/tmp/urls'
 else:
@@ -42,109 +50,314 @@ if not os.path.exists(URL_LIST_FILE):
     with open(URL_LIST_FILE, 'w') as f:
         json.dump([], f)
 
-# URLリストを取得する関数（キャッシュ対応）
-@cache.cached(timeout=300, key_prefix='url_list')
-def get_url_list():
+# Vercel KV接続情報
+KV_REST_API_URL = os.environ.get('KV_REST_API_URL')
+KV_REST_API_TOKEN = os.environ.get('KV_REST_API_TOKEN')
+
+# Vercel Blob接続情報
+BLOB_READ_WRITE_TOKEN = os.environ.get('BLOB_READ_WRITE_TOKEN')
+
+# KVヘルパー関数
+async def kv_get(key):
+    """KVストアから値を取得"""
+    if not KV_REST_API_URL or not KV_REST_API_TOKEN:
+        app.logger.warning("KV接続情報が設定されていません。ファイルベースのストレージにフォールバックします。")
+        return None
+    
     try:
-        if not os.path.exists(URL_LIST_FILE):
-            with open(URL_LIST_FILE, 'w', encoding='utf-8') as f:
-                json.dump([], f, ensure_ascii=False)
+        url = f"{KV_REST_API_URL}/get/{key}"
+        headers = {
+            "Authorization": f"Bearer {KV_REST_API_TOKEN}"
+        }
         
-        # まずUTF-8で試す
-        try:
-            with open(URL_LIST_FILE, 'r', encoding='utf-8') as f:
-                url_list = json.load(f)
-                
-            # 文字化け検出
-            has_mojibake = False
-            for url in url_list:
-                for key, value in url.items():
-                    if isinstance(value, str) and ('繝' in value or '縺' in value):
-                        has_mojibake = True
-                        break
-                if has_mojibake:
-                    break
-                    
-            # 文字化けが検出された場合、別のエンコーディングを試す
-            if has_mojibake:
-                app.logger.info("URL一覧に文字化けを検出しました。別のエンコーディングを試みます。")
-                encodings = ['shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
-                
-                for encoding in encodings:
-                    try:
-                        with open(URL_LIST_FILE, 'rb') as f:
-                            content = f.read()
-                        decoded_content = content.decode(encoding, errors='ignore')
-                        
-                        # JSONとして解析できるか試す
-                        fixed_url_list = json.loads(decoded_content)
-                        
-                        # 文字化けチェック
-                        fixed_has_mojibake = False
-                        for url in fixed_url_list:
-                            for key, value in url.items():
-                                if isinstance(value, str) and ('繝' in value or '縺' in value):
-                                    fixed_has_mojibake = True
-                                    break
-                            if fixed_has_mojibake:
-                                break
-                                
-                        if not fixed_has_mojibake:
-                            # 文字化けが解消された場合は修正したリストを使用
-                            app.logger.info(f"URL一覧の文字化けを{encoding}で修正しました")
-                            url_list = fixed_url_list
-                            
-                            # 修正したリストを保存
-                            with open(URL_LIST_FILE, 'w', encoding='utf-8') as f:
-                                json.dump(url_list, f, ensure_ascii=False)
-                            break
-                    except Exception as e:
-                        app.logger.error(f"エンコーディング{encoding}での読み込み失敗: {str(e)}")
-            
-            return url_list
-            
-        except json.JSONDecodeError:
-            app.logger.error("JSONデコードエラー、ファイルを再初期化します")
-            with open(URL_LIST_FILE, 'w', encoding='utf-8') as f:
-                json.dump([], f, ensure_ascii=False)
-            return []
-            
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result.get('result')
+                elif response.status == 404:
+                    app.logger.info(f"KVキー '{key}' が見つかりません")
+                    return None
+                else:
+                    app.logger.error(f"KV取得エラー: {response.status} - {await response.text()}")
+                    return None
     except Exception as e:
-        app.logger.error(f"URLリストの読み込みエラー: {str(e)}")
+        app.logger.error(f"KV取得例外: {str(e)}")
+        return None
+
+async def kv_set(key, value, ex=None):
+    """KVストアに値を設定"""
+    if not KV_REST_API_URL or not KV_REST_API_TOKEN:
+        app.logger.warning("KV接続情報が設定されていません。ファイルベースのストレージにフォールバックします。")
+        return False
+    
+    try:
+        url = f"{KV_REST_API_URL}/set/{key}"
+        headers = {
+            "Authorization": f"Bearer {KV_REST_API_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "value": value
+        }
+        
+        if ex:
+            data["ex"] = ex
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=data) as response:
+                if response.status == 200:
+                    return True
+                else:
+                    app.logger.error(f"KV設定エラー: {response.status} - {await response.text()}")
+                    return False
+    except Exception as e:
+        app.logger.error(f"KV設定例外: {str(e)}")
+        return False
+
+async def kv_del(key):
+    """KVストアから値を削除"""
+    if not KV_REST_API_URL or not KV_REST_API_TOKEN:
+        app.logger.warning("KV接続情報が設定されていません。ファイルベースのストレージにフォールバックします。")
+        return False
+    
+    try:
+        url = f"{KV_REST_API_URL}/del/{key}"
+        headers = {
+            "Authorization": f"Bearer {KV_REST_API_TOKEN}"
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.delete(url, headers=headers) as response:
+                if response.status == 200:
+                    return True
+                else:
+                    app.logger.error(f"KV削除エラー: {response.status} - {await response.text()}")
+                    return False
+    except Exception as e:
+        app.logger.error(f"KV削除例外: {str(e)}")
+        return False
+
+async def kv_keys(pattern="*"):
+    """パターンに一致するすべてのキーを取得"""
+    if not KV_REST_API_URL or not KV_REST_API_TOKEN:
+        app.logger.warning("KV接続情報が設定されていません。ファイルベースのストレージにフォールバックします。")
+        return []
+    
+    try:
+        url = f"{KV_REST_API_URL}/keys/{pattern}"
+        headers = {
+            "Authorization": f"Bearer {KV_REST_API_TOKEN}"
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result.get('result', [])
+                else:
+                    app.logger.error(f"KVキー一覧取得エラー: {response.status} - {await response.text()}")
+                    return []
+    except Exception as e:
+        app.logger.error(f"KVキー一覧例外: {str(e)}")
         return []
 
-# URLリストを保存する関数
-def save_url_list(url_list):
+# Blobヘルパー関数
+async def blob_put(file_name, content, options=None):
+    """コンテンツをBlobストレージに保存"""
+    if not BLOB_READ_WRITE_TOKEN:
+        app.logger.warning("Blob接続情報が設定されていません。ファイルベースのストレージにフォールバックします。")
+        return None
+    
     try:
-        # 文字化けが疑われるフィールドを修正
-        for url in url_list:
-            for key, value in url.items():
-                if isinstance(value, str) and ('繝' in value or '縺' in value):
-                    # 文字化けしている可能性があるため修正を試みる
-                    try:
-                        # UTF-8バイト列として扱い、別のエンコーディングで再解釈
-                        raw_bytes = value.encode('utf-8', errors='ignore')
-                        for encoding in ['shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']:
-                            try:
-                                # 一度encodeしてからdecodeしてみる
-                                test_decode = raw_bytes.decode(encoding, errors='ignore')
-                                if '繝' not in test_decode and '縺' not in test_decode:
-                                    url[key] = test_decode
-                                    app.logger.info(f"文字化け修正: {key}フィールドを{encoding}で再解釈しました")
-                                    break
-                            except Exception:
-                                continue
-                    except Exception as e:
-                        app.logger.error(f"文字化け修正エラー (フィールド: {key}): {str(e)}")
+        url = "https://blob.vercel-storage.com/put"
+        headers = {
+            "Authorization": f"Bearer {BLOB_READ_WRITE_TOKEN}",
+            "X-Blob-Store": "store",
+            "X-Blob-Filename": file_name,
+        }
         
-        with open(URL_LIST_FILE, 'w', encoding='utf-8') as f:
-            json.dump(url_list, f, ensure_ascii=False)
-        # キャッシュを無効化して次回の取得で最新データを読み込む
-        cache.delete('url_list')
+        if isinstance(content, str):
+            content = content.encode('utf-8')
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, data=content) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result.get('url')
+                else:
+                    app.logger.error(f"Blob保存エラー: {response.status} - {await response.text()}")
+                    return None
+    except Exception as e:
+        app.logger.error(f"Blob保存例外: {str(e)}")
+        return None
+
+async def blob_get(url):
+    """Blobストレージからコンテンツを取得"""
+    if not url or not url.startswith('https://'):
+        app.logger.error(f"無効なBlobURL: {url}")
+        return None
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    return await response.text()
+                else:
+                    app.logger.error(f"Blobコンテンツ取得エラー: {response.status} - {await response.text()}")
+                    return None
+    except Exception as e:
+        app.logger.error(f"Blobコンテンツ取得例外: {str(e)}")
+        return None
+
+async def blob_delete(url):
+    """Blobストレージからコンテンツを削除"""
+    if not BLOB_READ_WRITE_TOKEN:
+        app.logger.warning("Blob接続情報が設定されていません。ファイルベースのストレージにフォールバックします。")
+        return False
+    
+    if not url or not url.startswith('https://'):
+        app.logger.error(f"無効なBlobURL: {url}")
+        return False
+    
+    try:
+        # URLからパスパートを抽出
+        url_parts = urlparse(url)
+        path = url_parts.path
+        
+        delete_url = "https://blob.vercel-storage.com/delete"
+        headers = {
+            "Authorization": f"Bearer {BLOB_READ_WRITE_TOKEN}",
+            "X-Blob-Store": "store",
+            "X-Blob-Path": path
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.delete(delete_url, headers=headers) as response:
+                if response.status == 200:
+                    return True
+                else:
+                    app.logger.error(f"Blob削除エラー: {response.status} - {await response.text()}")
+                    return False
+    except Exception as e:
+        app.logger.error(f"Blob削除例外: {str(e)}")
+        return False
+
+# 同期ラッパー関数
+def run_async(coroutine):
+    """非同期関数を同期的に実行するヘルパー"""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        # イベントループがない場合は新しく作成
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    return loop.run_until_complete(coroutine)
+
+# URLリスト管理の新しい実装
+def get_url_list():
+    """保存されたURLリストを取得 (Vercel KV & 後方互換性)"""
+    try:
+        # まずVercel KVから取得を試みる
+        url_list = run_async(kv_get('url_list'))
+        if url_list:
+            return url_list
+        
+        # KVに接続できない場合はファイルから読み込む
+        with open(URL_LIST_FILE, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        app.logger.error(f"URLリスト取得エラー: {str(e)}")
+        # エラーが発生した場合は空のリストを返す
+        return []
+
+def save_url_list(url_list):
+    """URLリストを保存 (Vercel KV & 後方互換性)"""
+    try:
+        # まずVercel KVへの保存を試みる
+        kv_success = run_async(kv_set('url_list', url_list))
+        
+        # どちらの場合も、後方互換性のためにファイルにも保存
+        with open(URL_LIST_FILE, 'w') as f:
+            json.dump(url_list, f)
+        
         return True
     except Exception as e:
-        app.logger.error(f"URLリストの保存エラー: {str(e)}")
+        app.logger.error(f"URLリスト保存エラー: {str(e)}")
         return False
+
+# 設定管理
+@lru_cache(maxsize=1)
+def get_config():
+    """アプリケーションの設定を取得"""
+    try:
+        config = run_async(kv_get('config'))
+        if not config:
+            # デフォルト設定
+            config = {
+                'max_urls': 100,
+                'default_expire_days': 30,
+                'debug_enabled': False,
+                'pixel_id': 'CM0EQKBC77U7DDDCEF4G'  # デフォルトのTikTokピクセルID
+            }
+            # 設定を保存
+            run_async(kv_set('config', config))
+        return config
+    except Exception as e:
+        app.logger.error(f"設定取得エラー: {str(e)}")
+        # デフォルト設定
+        return {
+            'max_urls': 100,
+            'default_expire_days': 30,
+            'debug_enabled': False,
+            'pixel_id': 'CM0EQKBC77U7DDDCEF4G'  # デフォルトのTikTokピクセルID
+        }
+
+def save_config(config):
+    """アプリケーションの設定を保存"""
+    try:
+        # キャッシュをクリア
+        get_config.cache_clear()
+        # KVに保存
+        return run_async(kv_set('config', config))
+    except Exception as e:
+        app.logger.error(f"設定保存エラー: {str(e)}")
+        return False
+
+# クリック数の更新
+def update_click_count(file_id):
+    """URLのクリック数を更新"""
+    try:
+        # クリック数情報を取得
+        click_stats = run_async(kv_get(f'clicks:{file_id}')) or {'total': 0, 'history': []}
+        
+        # 現在時刻
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 更新
+        click_stats['total'] += 1
+        click_stats['history'].append(now)
+        
+        # 履歴は最新100件のみ保持
+        if len(click_stats['history']) > 100:
+            click_stats['history'] = click_stats['history'][-100:]
+        
+        # 保存
+        run_async(kv_set(f'clicks:{file_id}', click_stats))
+        
+        return True
+    except Exception as e:
+        app.logger.error(f"クリック数更新エラー: {str(e)}")
+        return False
+
+def get_click_stats(file_id):
+    """URLのクリック統計情報を取得"""
+    try:
+        return run_async(kv_get(f'clicks:{file_id}')) or {'total': 0, 'history': []}
+    except Exception as e:
+        app.logger.error(f"クリック統計取得エラー: {str(e)}")
+        return {'total': 0, 'history': []}
 
 @app.route('/')
 def index():
@@ -192,306 +405,315 @@ def fetch_html_content(url):
     
     return html_content
 
-@app.route('/create', methods=['POST'])
+@app.route('/admin/create', methods=['POST'])
 def create():
-    original_url = request.form.get('original_url')
-    pixel_code = request.form.get('pixel_code', '')
-    
-    if not original_url:
-        flash('URLを入力してください。', 'error')
-        return redirect(url_for('index'))
-    
-    if not pixel_code:
-        flash('Pixelコードを入力してください。', 'error')
-        return redirect(url_for('index'))
-    
     try:
-        # オリジナルURLからドメイン部分を抽出
-        parsed_url = urlparse(original_url)
+        # フォームデータを取得
+        url = request.form.get('url')
+        pixel_code = request.form.get('pixel_code', '')  # ユーザー入力のピクセルコード（任意）
+        
+        app.logger.info(f"URL作成リクエスト: {url}")
+        
+        if not url:
+            flash('URLを入力してください。', 'error')
+            return redirect(url_for('index'))
+            
+        # URLの形式を検証
+        if not url.startswith(('http://', 'https://')):
+            url = f"https://{url}"
+            
+        # ドメインを取得
+        parsed_url = urlparse(url)
         base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
         
-        # オリジナルURLからHTMLを取得（キャッシュを使用）
+        # YouTube URLの特別処理
+        is_youtube = 'youtube.com' in parsed_url.netloc or 'youtu.be' in parsed_url.netloc
+        
+        # 設定情報を取得
+        config = get_config()
+        
+        # リクエストタイムアウト: 10秒
+        timeout = 10
+        
+        # HTMLコンテンツを取得
         try:
-            html_content = fetch_html_content(original_url)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
+            }
+            
+            response = requests.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status()  # エラーチェック
+            
+            # エンコーディングの自動検出
+            if response.encoding == 'ISO-8859-1':
+                # 日本語サイトの場合、エンコーディングを推測
+                encodings = ['utf-8', 'shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
+                html_content = None
+                
+                for encoding in encodings:
+                    try:
+                        response.encoding = encoding
+                        decoded_text = response.text
+                        if not ('繝' in decoded_text or '縺' in decoded_text):
+                            html_content = decoded_text
+                            app.logger.info(f"エンコーディング検出: {encoding}")
+                            break
+                    except UnicodeDecodeError:
+                        continue
+                
+                # どのエンコーディングでも失敗した場合はデフォルトに戻す
+                if html_content is None:
+                    response.encoding = 'utf-8'
+                    html_content = response.text
+            else:
+                html_content = response.text
+                
         except requests.exceptions.RequestException as e:
-            flash(f'URLアクセスエラー: {str(e)}', 'error')
+            app.logger.error(f"リクエストエラー: {str(e)}")
+            flash(f'URLからのコンテンツ取得に失敗しました: {str(e)}', 'error')
             return redirect(url_for('index'))
         
-        # 文字化け検出と修正
-        if '繝' in html_content or '縺' in html_content:
-            app.logger.info(f"取得したHTMLコンテンツに文字化けを検出: {original_url}")
-            
-            # 一般的な文字化けパターンの修正を試みる
-            common_mojibake = {
-                '繧ｫ繧ｿ繧ｫ繝': 'カタカナ',
-                '鬮倥＆': '高さ',
-                '讌ｽ螢ｫ': '楽天',
-                '髮ｻ蟄': '電子',
-                '繝｡繝ｼ繧ｫ繝ｼ': 'メーカー',
-                '繝悶Λ繝ｳ繝': 'ブランド',
-                '繧ｷ繝ｧ繝': 'ショッ',
-                '繧｢繧､繝': 'アイテ',
-                '繧｢繝': 'アプ',
-                '繝昴う繝ｳ繝': 'ポイント'
-            }
-            
-            for mojibake, correct in common_mojibake.items():
-                if mojibake in html_content:
-                    html_content = html_content.replace(mojibake, correct)
-            
-            # 正規表現を使ったより複雑な置換パターン
-            # 「繝」の後に「ｼ」が続くパターンはよく「ー」に変換される
-            html_content = re.sub(r'繝ｼ', 'ー', html_content)
-            
-            # 楽天特有の文字化けパターン
-            html_content = re.sub(r'Rakuten\s+[Ff]ashion', '楽天ファッション', html_content)
+        # ベースURLの取得
+        base_url = url
         
-        # 提供されたPixelコードを直接使用する
-        # スクリプトタグを削除して純粋なJSコードのみ抽出
-        pixel_code = pixel_code.strip()
-        if pixel_code.startswith('<script'):
-            start_idx = pixel_code.find('>') + 1
-            end_idx = pixel_code.rfind('</script>')
-            if start_idx > 0 and end_idx > start_idx:
-                pixel_code = pixel_code[start_idx:end_idx].strip()
+        # TikTokピクセルコードの生成
+        # デフォルトのピクセルIDを使用（または設定からカスタムIDを取得）
+        tiktok_pixel_id = config.get('pixel_id', 'CM0EQKBC77U7DDDCEF4G')
         
-        # 通常の非表示要素方式（直接コードを使用）
-        pixel_script = """
-<!-- TikTok Pixel（非表示要素方式） -->
-<script type="text/javascript">
-// ピクセルコードは独立したスコープで実行し、グローバル変数の競合を防ぐ
-(function() {
-    // ページが完全に読み込まれてから実行することで、DOM操作の競合を防ぐ
-    function loadTikTokPixel() {
-        try {
-            // CSS競合を防ぐために完全に独立したコンテナを作成
-    var pixelContainer = document.createElement('div');
-            pixelContainer.id = 'tiktok-pixel-container';
-            pixelContainer.setAttribute('aria-hidden', 'true');
-            pixelContainer.style.cssText = 'position:absolute!important;width:0!important;height:0!important;overflow:hidden!important;opacity:0!important;pointer-events:none!important;display:none!important;left:-9999px!important;top:-9999px!important;';
-            
-            // shadowDOM使用 - 完全にメインページから隔離
-            var shadow = null;
-            try {
-                // Mode: closed でCSSの競合を完全に防ぐ
-                shadow = pixelContainer.attachShadow({mode: 'closed'});
-            } catch(e) {
-                console.error('ShadowDOM非対応: フォールバック使用', e);
-            }
-            
-            // スクリプト要素（ピクセル用）
-    var pixelScript = document.createElement('script');
-    pixelScript.type = 'text/javascript';
-            pixelScript.async = true;
-            
-            // ピクセルコードを独立スコープに閉じ込める
-            pixelScript.textContent = `
-                // ピクセルコードを実行する前にグローバル変数と名前空間を保護
-                (function(w, d) {
-                    try {
-                        // オリジナルのJavaScriptオブジェクトを保存
-                        var _origDefineProperty = Object.defineProperty;
-                        var _origGetComputedStyle = window.getComputedStyle;
-                        
-                        // CSSとDOMへの干渉を防ぐためのラッパー関数
-                        window.getComputedStyle = function(el) {
-                            try {
-                                return _origGetComputedStyle.apply(this, arguments);
-                            } catch(e) {
-                                // エラー時にはダミーのCSSオブジェクトを返す
-                                return {getPropertyValue: function() { return ''; }};
-                            }
-                        };
-                        
-                        // ピクセルコード実行
-                        """ + pixel_code.replace("'", "\\'") + """
-                        
-                        // 元のグローバル関数を復元
-                        window.getComputedStyle = _origGetComputedStyle;
-                    } catch(e) {
-                        console.error('[TikTok]: ピクセル実行エラー', e);
-                    }
-                })(window, document);
-            `;
-            
-            // shadowDOMが利用可能ならそこに追加、そうでなければ直接コンテナに追加
-            if (shadow) {
-                // shadowDOM内のスタイル定義 - 外部に影響しない
-                var shadowStyle = document.createElement('style');
-                shadowStyle.textContent = 'div { all: initial !important; }';
-                shadow.appendChild(shadowStyle);
-                
-                var innerContainer = document.createElement('div');
-                innerContainer.style.cssText = 'all: initial !important; visibility: hidden !important; position: absolute !important; width: 0 !important; height: 0 !important;';
-                innerContainer.appendChild(pixelScript);
-                shadow.appendChild(innerContainer);
-            } else {
-    pixelContainer.appendChild(pixelScript);
-            }
-            
-            // コンテナをbodyではなくheadに追加することでCSSの衝突を減らす
-            if (document.head) {
-                document.head.appendChild(pixelContainer);
-            } else {
-                window.addEventListener('DOMContentLoaded', function() {
-                    if (document.head) document.head.appendChild(pixelContainer);
-                    else if (document.body) document.body.appendChild(pixelContainer);
-                });
-            }
-            
-            // 5秒後にピクセルコンテナを削除してメモリリークを防止
-            setTimeout(function() {
-                try {
-                    if (document.contains(pixelContainer)) {
-                        pixelContainer.parentNode.removeChild(pixelContainer);
-                    }
-                } catch(e) {
-                    console.error('[TikTok]: クリーンアップエラー', e);
-                }
-            }, 5000);
-        } catch(err) {
-            // エラーをサイレントに処理（ユーザーに表示されないよう）
-            console.error('[TikTok]: Pixel設定エラー', err);
-        }
-    }
-    
-    // ページの読み込みステータスに応じた実行タイミング制御
-    if (document.readyState === 'complete') {
-        // すでにページが読み込み完了している場合
-        setTimeout(loadTikTokPixel, 2000);
-    } else {
-        // ページ読み込み完了後に実行
-        window.addEventListener('load', function() {
-            setTimeout(loadTikTokPixel, 2000);
-        });
-    }
-})();
-</script>
-"""
+        # ユーザーがカスタムコードを入力した場合はそれを優先
+        if pixel_code and len(pixel_code.strip()) > 0:
+            # XSS対策：スクリプトタグだけを抽出して許可
+            if '<script' in pixel_code and '</script>' in pixel_code:
+                script_pattern = re.compile(r'<script[^>]*>(.*?)</script>', re.DOTALL)
+                script_matches = script_pattern.findall(pixel_code)
+                if script_matches:
+                    script_content = script_matches[0]
+                    # スクリプト内容をサニタイズ（最低限の対策）
+                    script_content = script_content.replace('<', '&lt;').replace('>', '&gt;')
+                    pixel_script = f"<script>\n{script_content}\n</script>"
+                else:
+                    # スクリプトタグはあるが内容がない場合
+                    pixel_script = generate_tiktok_pixel_script(tiktok_pixel_id)
+            else:
+                # スクリプトタグがない場合はIDとして扱う
+                cleaned_id = re.sub(r'[^A-Z0-9]', '', pixel_code.upper())
+                if cleaned_id:
+                    tiktok_pixel_id = cleaned_id
+                pixel_script = generate_tiktok_pixel_script(tiktok_pixel_id)
+        else:
+            # デフォルトピクセルスクリプトを生成
+            pixel_script = generate_tiktok_pixel_script(tiktok_pixel_id)
         
-        # メタデータを埋め込むためのスクリプト（埋め込みURLの元情報をデータとして保持）
-        metadata_script = """
-<!-- メタデータ情報（TikTok Pixelで参照） -->
-<script type="application/json" id="afitori-metadata">
-{{
-  "originalUrl": "{0}",
-  "generatedAt": "{1}",
-  "protocol": "{2}",
-  "domain": "{3}"
-}}
-</script>
-""".format(original_url, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), urlparse(original_url).scheme, urlparse(original_url).netloc)
-        
-        # 元のURLをコメントとして記録
-        base_href = f'<!-- 元のURL: {original_url} -->'
-        
-        # CSSリセットを追加（TikTokスクリプトがサイトのCSSに影響しないようにする）
-        css_reset = '''
-<!-- TikTok Pixel用スタイル分離 -->
-<style id="tiktok-pixel-isolation">
-/* TikTok Pixel用の隔離スタイル - メインページのスタイルに影響しないよう隔離 */
-#tiktok-pixel-container,
-iframe[title="TikTok Pixel"],
-.ttq-loading, .ttq-confirm, .ttq-pixel-base, .ttq-transport-frame {
-    all: initial !important;
-    position: absolute !important;
-    width: 1px !important;
-    height: 1px !important;
-    padding: 0 !important;
-    margin: -1px !important;
-    overflow: hidden !important;
-    clip: rect(0, 0, 0, 0) !important;
-    white-space: nowrap !important;
-    border: 0 !important;
-    display: none !important;
-    opacity: 0 !important;
-    visibility: hidden !important;
-    pointer-events: none !important;
-    z-index: -9999 !important;
+        # CSSリセットとメタデータタグ
+        css_reset = """
+<style>
+/* 基本的なブラウザスタイルリセット */
+html, body, div, span, applet, object, iframe,
+h1, h2, h3, h4, h5, h6, p, blockquote, pre,
+a, abbr, acronym, address, big, cite, code,
+del, dfn, em, img, ins, kbd, q, s, samp,
+small, strike, strong, sub, sup, tt, var,
+b, u, i, center,
+dl, dt, dd, ol, ul, li,
+fieldset, form, label, legend,
+table, caption, tbody, tfoot, thead, tr, th, td,
+article, aside, canvas, details, embed,
+figure, figcaption, footer, header, hgroup,
+menu, nav, output, ruby, section, summary,
+time, mark, audio, video {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    font-size: 100%;
+    font: inherit;
+    vertical-align: baseline;
 }
-
-/* 元のページのアニメーションとCSSを保護するためのリセット */
-#css-debug-toolbar * {
-    all: initial !important;
-    box-sizing: border-box !important;
-    font-family: sans-serif !important;
+/* HTML5 display-role reset for older browsers */
+article, aside, details, figcaption, figure,
+footer, header, hgroup, menu, nav, section {
+    display: block;
 }
-
-/* グローバルなCSSリセット防止 - 外部スクリプトがページ全体のスタイルをリセットすることを防ぐ */
-html, body, div:not(#tiktok-pixel-container):not(#css-debug-toolbar), span, applet, object, iframe:not([title="TikTok Pixel"]),
-h1, h2, h3, h4, h5, h6, p, blockquote, pre, a, abbr, acronym, address, big, cite, code,
-del, dfn, em, img, ins, kbd, q, s, samp, small, strike, strong, sub, sup, tt, var,
-b, u, i, center, dl, dt, dd, ol, ul, li, fieldset, form, label, legend,
-table, caption, tbody, tfoot, thead, tr, th, td, article, aside, canvas, details,
-embed, figure, figcaption, footer, header, hgroup, menu, nav, output, ruby,
-section, summary, time, mark, audio, video {
-    animation-play-state: running !important;
-    transition: all 0.3s ease !important;
+body {
+    line-height: 1;
 }
-
-/* アニメーション保護 */
-@keyframes preserve-animations {
-    from { opacity: 1; }
-    to { opacity: 1; }
+ol, ul {
+    list-style: none;
+}
+blockquote, q {
+    quotes: none;
+}
+blockquote:before, blockquote:after,
+q:before, q:after {
+    content: '';
+    content: none;
+}
+table {
+    border-collapse: collapse;
+    border-spacing: 0;
 }
 </style>
-'''
+"""
         
-        # <head>タグを探してその終了直前にメタデータとピクセルスクリプトを挿入
-        head_end_pos = html_content.find("</head>")
-        if head_end_pos > 0:
-            new_html = html_content[:head_end_pos] + base_href + metadata_script + css_reset + pixel_script + html_content[head_end_pos:]
-        else:
-            # headタグが見つからない場合の処理
-            head_start_pos = html_content.find("<head")
-            if head_start_pos > 0:
-                head_start_end = html_content.find(">", head_start_pos)
-                if head_start_end > 0:
-                    insert_pos = head_start_end + 1
-                    # CSSリセットを追加
-                    new_html = html_content[:insert_pos] + "<head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + css_reset + pixel_script + "</head>" + html_content[insert_pos:]
-                else:
-                    # HTMLタグを探してその直後に挿入
-                    html_pos = html_content.find("<html")
-                    if html_pos > 0:
-                        html_end = html_content.find(">", html_pos)
-                        if html_end > 0:
-                            insert_pos = html_end + 1
-                            # CSSリセットを追加
-                            new_html = html_content[:insert_pos] + "<head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + css_reset + pixel_script + "</head>" + html_content[insert_pos:]
-                        else:
-                            # HTMLタグもない場合は先頭に挿入
-                            # CSSリセットを追加
-                            new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + css_reset + pixel_script + "</head>" + html_content
-                    else:
-                        # HTMLタグもない場合は先頭に挿入
-                        # CSSリセットを追加
-                        new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + css_reset + pixel_script + "</head>" + html_content
+        # メタデータスクリプト (OGP情報を追加)
+        metadata_script = f"""
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="X-UA-Compatible" content="ie=edge">
+<meta property="og:title" content="Shared Link">
+<meta property="og:description" content="Click to view content">
+<meta property="og:image" content="https://example.com/og-image.jpg">
+<meta property="og:url" content="{url}">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+"""
+        
+        # HTML加工処理を改善
+        # YouTube：iframeを直接埋め込む
+        if is_youtube:
+            video_id = None
+            if 'youtube.com/watch' in url:
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+                video_id = query.get('v', [None])[0]
+            elif 'youtu.be' in url:
+                video_id = urllib.parse.urlparse(url).path.lstrip('/')
+            
+            if video_id:
+                new_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Video</title>
+    {pixel_script}
+    <style>
+        body {{ margin: 0; padding: 0; overflow: hidden; }}
+        .video-container {{ position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; }}
+        .video-container iframe {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; }}
+    </style>
+</head>
+<body>
+    <div class="video-container">
+        <iframe width="100%" height="100%" src="https://www.youtube.com/embed/{video_id}" 
+                frameborder="0" allowfullscreen></iframe>
+    </div>
+</body>
+</html>"""
             else:
-                # headタグがない場合は先頭に挿入
-                # CSSリセットを追加
-                new_html = "<!DOCTYPE html><html><head>" + f'<!-- 元のURL: {original_url} -->' + metadata_script + css_reset + pixel_script + "</head>" + html_content
-        
-        # 修正したHTMLを保存する前に相対パスを絶対パスに変換
-        new_html = fix_relative_paths(new_html, base_domain, original_url)
+                # ビデオIDが見つからない場合
+                new_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Video</title>
+    {pixel_script}
+</head>
+<body>
+    <h1>YouTube URL</h1>
+    <p><a href="{url}" target="_blank">元のYouTube動画を開く</a></p>
+</body>
+</html>"""
+        else:
+            # 通常のウェブページの場合
+            # BeautifulSoupを使用して安全にHTMLを解析
+            try:
+                soup = BeautifulSoup(html_content, 'html.parser')
+                
+                # 元のheadタグのコンテンツを保持
+                head_content = ''
+                if soup.head:
+                    for tag in soup.head.children:
+                        if tag.name != 'meta' and tag.name != 'title':
+                            head_content += str(tag)
+                
+                # HTML内の相対URLを絶対URLに変換
+                for tag in soup.find_all(['img', 'script', 'link', 'a']):
+                    if tag.name == 'img' and tag.get('src'):
+                        if not tag['src'].startswith(('http://', 'https://', 'data:', '//')):
+                            tag['src'] = urljoin(base_url, tag['src'])
+                    elif tag.name == 'script' and tag.get('src'):
+                        if not tag['src'].startswith(('http://', 'https://', 'data:', '//')):
+                            tag['src'] = urljoin(base_url, tag['src'])
+                    elif tag.name == 'link' and tag.get('href'):
+                        if not tag['href'].startswith(('http://', 'https://', 'data:', '//')):
+                            tag['href'] = urljoin(base_url, tag['href'])
+                    elif tag.name == 'a' and tag.get('href'):
+                        if not tag['href'].startswith(('http://', 'https://', 'data:', '//', '#', 'javascript:', 'mailto:')):
+                            tag['href'] = urljoin(base_url, tag['href'])
+                
+                # CSSのurl()を修正
+                for style_tag in soup.find_all('style'):
+                    if style_tag.string:
+                        style_content = style_tag.string
+                        # url(...) パターンを検索して絶対パスに変換
+                        style_tag.string = re.sub(
+                            r'url\([\'"]?([^\'" \)]+)[\'"]?\)',
+                            lambda m: f'url({urljoin(base_url, m.group(1))})' if not re.match(r'^(https?:|data:|\/\/)', m.group(1)) else m.group(0),
+                            style_content
+                        )
+                
+                # インラインスタイルのurl()も修正
+                for tag in soup.find_all(attrs={"style": True}):
+                    style_content = tag['style']
+                    tag['style'] = re.sub(
+                        r'url\([\'"]?([^\'" \)]+)[\'"]?\)',
+                        lambda m: f'url({urljoin(base_url, m.group(1))})' if not re.match(r'^(https?:|data:|\/\/)', m.group(1)) else m.group(0),
+                        style_content
+                    )
+                
+                # HTML文書を再構築
+                body_content = str(soup.body) if soup.body else ''
+                if not body_content:
+                    body_content = f"<body>{html_content}</body>"
+                
+                # 新しいHTMLを構築
+                new_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{soup.title.string if soup.title else 'Web Page'}</title>
+    {metadata_script}
+    {css_reset}
+    {pixel_script}
+    {head_content}
+</head>
+{body_content}
+</html>"""
+                
+            except Exception as e:
+                app.logger.error(f"HTML解析エラー: {str(e)}")
+                # 解析に失敗した場合は、単純に挿入
+                new_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Page</title>
+    {metadata_script}
+    {css_reset}
+    {pixel_script}
+</head>
+<body>
+    {html_content}
+</body>
+</html>"""
         
         # 一意のファイル名を生成
         file_id = str(uuid.uuid4())
         file_name = f"{file_id}.html"
-        file_path = os.path.join(URLS_DIR, file_name)
         
-        # メタタグでUTF-8設定されていることを確認（文字化け予防）
-        if '<meta charset="UTF-8">' not in new_html:
-            meta_pos = new_html.find('<head>') + 6 if '<head>' in new_html else 0
-            if meta_pos > 0:
-                new_html = new_html[:meta_pos] + '\n<meta charset="UTF-8">\n' + new_html[meta_pos:]
-            else:
-                # headがない場合は先頭に追加
-                new_html = '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8">\n</head>\n<body>\n' + new_html + '\n</body>\n</html>'
+        # Vercel Blobにコンテンツを保存
+        blob_url = run_async(blob_put(file_name, new_html))
         
-        # UTF-8で明示的に保存
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(new_html)
+        if not blob_url:
+            # Blobストレージが利用できない場合はファイルに保存（後方互換性）
+            file_path = os.path.join(URLS_DIR, file_name)
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(new_html)
+            app.logger.warning("Blobストレージが使用できないため、ファイルに保存しました")
         
         # URLリストに追加
         url_list = get_url_list()
@@ -506,11 +728,17 @@ section, summary, time, mark, audio, video {
         full_url = f"{base_url}{new_url}"
         
         # 古いエントリの削除（100件を超える場合）
-        if len(url_list) >= 100:
+        max_urls = config.get('max_urls', 100)
+        if len(url_list) >= max_urls:
             # 作成日時でソートして古いものから削除
             url_list.sort(key=lambda x: x.get('created_at', ''))
             oldest_entry = url_list.pop(0)
-            # 対応するファイルも削除
+            
+            # Blobストレージから古いコンテンツを削除
+            if oldest_entry.get('blob_url'):
+                run_async(blob_delete(oldest_entry['blob_url']))
+            
+            # 後方互換性のため、ファイルも削除
             oldest_file = os.path.join(URLS_DIR, f"{oldest_entry['id']}.html")
             if os.path.exists(oldest_file):
                 try:
@@ -518,15 +746,17 @@ section, summary, time, mark, audio, video {
                 except Exception as e:
                     app.logger.error(f"古いファイルの削除エラー: {str(e)}")
         
-        # pixelコードの有無を確認して、適切な情報を保存
+        # URLエントリの作成
         url_entry = {
             'id': file_id,
-            'original_url': original_url,
+            'original_url': url,
             'new_url': new_url,
             'full_url': full_url,
-            'pixel_id': 'カスタムコード',
-            'custom_code': True,
-            'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            'pixel_id': tiktok_pixel_id,
+            'custom_code': pixel_code and len(pixel_code.strip()) > 0,
+            'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'blob_url': blob_url,  # Blobストレージのリンク
+            'youtube': is_youtube
         }
         
         url_list.append(url_entry)
@@ -543,16 +773,27 @@ section, summary, time, mark, audio, video {
         flash(f'エラー: {str(e)}', 'error')
         return redirect(url_for('index'))
 
+# TikTokピクセルスクリプト生成関数
+def generate_tiktok_pixel_script(pixel_id):
+    """標準的なTikTokピクセル初期化スクリプトを生成"""
+    if not pixel_id:
+        pixel_id = 'CM0EQKBC77U7DDDCEF4G'  # デフォルトID
+    
+    return f"""
+<script>
+!function (w, d, t) {{
+    w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}};ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
+    ttq.load('{pixel_id}');
+    ttq.page();
+}}(window, document, 'ttq');
+</script>
+"""
+
 @app.route('/view/<file_id>')
 def view(file_id):
     try:
         # 設定情報を取得
         config = get_config()
-        
-        # クリック計測用に現在時刻をユニークIDで生成する
-        # これにより、新しいセッションでのキャッシュ問題を回避する
-        current_time = int(time.time())
-        unique_id = f"{file_id}_{current_time}"
         
         # URLステータスチェック (有効期限、クリック数制限など)
         url_list = get_url_list()
@@ -568,384 +809,123 @@ def view(file_id):
             app.logger.info(f"URL not found: {file_id}")
             return render_template('error.html', error="指定されたURLは存在しません"), 404
         
-        # ファイルパスを取得
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id + '.html')
+        # HTMLコンテンツを取得（Blob優先）
+        html_content = None
         
-        if not os.path.exists(file_path):
-            app.logger.error(f"File not found: {file_path}")
-            return render_template('error.html', error="ファイルが見つかりません"), 404
+        # 1. BlobストレージからHTMLコンテンツを取得
+        if target_url.get('blob_url'):
+            app.logger.info(f"Blobストレージからコンテンツを取得: {target_url['blob_url']}")
+            html_content = run_async(blob_get(target_url['blob_url']))
         
-        # バイナリモードでファイルを読み込む
-        with open(file_path, 'rb') as f:
-            raw_content = f.read()
-        
-        # まずUTF-8で試す
-        try:
-            html_content = raw_content.decode('utf-8')
-        except UnicodeDecodeError:
-            # UTF-8での読み込みに失敗した場合、他のエンコーディングを試す
-            html_content = None
-            encodings = ['shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
+        # 2. Blobが存在しない、または取得に失敗した場合はファイルから読み込み
+        if not html_content:
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id + '.html')
+            if not os.path.exists(file_path):
+                app.logger.error(f"HTML file not found: {file_path}")
+                return render_template('error.html', error="ファイルが見つかりません"), 404
             
-            for encoding in encodings:
-                try:
-                    html_content = raw_content.decode(encoding)
-                    app.logger.info(f"エンコーディング自動検出: {encoding}で正常にデコードしました")
-                    break
-                except UnicodeDecodeError:
-                    continue
-            
-            # どのエンコーディングでも読み込めなかった場合は、エラー回避のためUTF-8でデコード
-            if html_content is None:
-                html_content = raw_content.decode('utf-8', errors='replace')
-                app.logger.warning("すべてのエンコーディングでデコードに失敗しました。UTF-8で強制的にデコードします。")
-        
-        # 文字化け検出と修正
-        if '繝' in html_content or '縺' in html_content:
-            app.logger.info(f"文字化けを検出: {file_id}")
-            
-            # 文字化けが疑われる文字の置換マッピング
-            mojibake_patterns = [
-                ('繝', ''), ('縺', ''), ('菴', ''), ('・', '')
-            ]
-            
-            # 可能性のあるエンコーディングを試す
-            encodings = ['shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
-            for encoding in encodings:
-                try:
-                    # 一度encodeしてからdecodeしてみる
-                    test_content = html_content.encode('utf-8', errors='ignore').decode(encoding, errors='ignore')
-                    # 文字化けの特徴がなければ正しいエンコーディングと判断
-                    if '繝' not in test_content and '縺' not in test_content:
-                        html_content = test_content
-                        app.logger.info(f"文字化けを{encoding}で修正しました")
-                        break
-                except Exception:
-                    continue
-            
-            # バイナリレベルでの再変換を試みる
-            if '繝' in html_content or '縺' in html_content:
+            # ファイルからHTMLコンテンツを読み込み
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+            except UnicodeDecodeError:
+                # UTF-8で読めない場合はバイナリモードで読み込み、エンコーディングを推測
+                with open(file_path, 'rb') as f:
+                    raw_content = f.read()
+                
+                # エンコーディングを推測
+                encodings = ['utf-8', 'shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
                 for encoding in encodings:
                     try:
-                        # バイナリデータからの直接変換
-                        decoded = raw_content.decode(encoding, errors='ignore')
-                        if '繝' not in decoded and '縺' not in decoded:
-                            html_content = decoded
-                            app.logger.info(f"バイナリから{encoding}で再デコードして文字化けを修正しました")
-                            break
-                    except Exception:
+                        html_content = raw_content.decode(encoding)
+                        app.logger.info(f"エンコーディング自動検出: {encoding}")
+                        break
+                    except UnicodeDecodeError:
                         continue
-            
-            # 一般的な文字化けパターンの修正も試みる
-            if '繝' in html_content or '縺' in html_content:
-                app.logger.info("パターン置換による文字化け修正を試みます")
-                fixed_content = html_content
-                # SHIFT-JISの不正なUTF-8エンコーディングが原因の文字化け対応
-                common_mojibake = {
-                    # 日本語の一般的な文字化けパターン
-                    '繧ｫ繧ｿ繧ｫ繝': 'カタカナ',
-                    '鬮倥＆': '高さ',
-                    '讌ｽ螢ｫ': '楽天',
-                    '髮ｻ蟄': '電子',
-                    '繝｡繝ｼ繧ｫ繝ｼ': 'メーカー'
-                }
                 
-                for mojibake, correct in common_mojibake.items():
-                    if mojibake in fixed_content:
-                        fixed_content = fixed_content.replace(mojibake, correct)
-                
-                # パターン修正で文字化けが減った場合は採用
-                if fixed_content.count('繝') < html_content.count('繝'):
-                    html_content = fixed_content
-                    app.logger.info("パターン置換で文字化けを部分的に修正しました")
+                # どのエンコーディングでも読み込めなかった場合、置換モードでUTF-8を試す
+                if not html_content:
+                    html_content = raw_content.decode('utf-8', errors='replace')
+                    app.logger.warning("エンコーディング推測失敗、UTF-8(置換モード)で読み込み")
         
-        # オリジナルURLを取得
-        original_url = target_url.get('original_url', '')
-        if original_url:
-            parsed_url = urlparse(original_url)
-            base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
-            
-            # 相対パスを絶対パスに変換
-            html_content = fix_relative_paths(html_content, base_domain, original_url)
-        
-        # メタタグでのエンコーディング指定を確認
-        if '<meta charset=' not in html_content.lower():
-            # charset指定がない場合は追加
-            head_end_pos = html_content.find('</head>')
-            if head_end_pos > 0:
-                html_content = html_content[:head_end_pos] + '<meta charset="UTF-8">\n' + html_content[head_end_pos:]
-            else:
-                # headタグが見つからない場合は先頭に追加
-                html_content = '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8">\n</head>\n<body>\n' + html_content + '\n</body>\n</html>'
-        else:
-            # 既存のcharset指定をUTF-8に統一
-            charset_pattern = re.compile(r'<meta[^>]*charset=[\'"](.*?)[\'"][^>]*>', re.IGNORECASE)
-            html_content = charset_pattern.sub('<meta charset="UTF-8">', html_content)
-        
-        # CSSデバッグ用のスクリプトを追加
-        css_debug_script = """
-<script>
-// CSS診断ツール - デバッグモード
-(function() {
-    function addCssDebugger() {
-        try {
-            // CSS問題診断用のツールバーを作成
-            var debugBar = document.createElement('div');
-            debugBar.id = 'css-debug-toolbar';
-            debugBar.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:rgba(0,0,0,0.8);color:#fff;z-index:999999;padding:8px;font-family:sans-serif;font-size:12px;text-align:left;box-shadow:0 -2px 10px rgba(0,0,0,0.3);';
-            
-            // ボタンと情報表示エリアを追加
-            debugBar.innerHTML = `
-                <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <div>
-                        <button id="debug-toggle-animations" style="margin-right:10px;padding:3px 8px;background:#f44336;border:none;color:#fff;border-radius:3px;cursor:pointer;">アニメーション停止</button>
-                        <button id="debug-highlight-css" style="margin-right:10px;padding:3px 8px;background:#2196F3;border:none;color:#fff;border-radius:3px;cursor:pointer;">CSSハイライト</button>
-                        <button id="debug-show-styles" style="padding:3px 8px;background:#4CAF50;border:none;color:#fff;border-radius:3px;cursor:pointer;">スタイル検査</button>
-                    </div>
-                    <div id="debug-info" style="color:#fff;font-family:monospace;">デバッグモード</div>
-                    <button id="debug-close" style="background:none;border:none;color:#fff;font-size:16px;cursor:pointer;">×</button>
-                </div>
-                <div id="debug-output" style="margin-top:8px;max-height:200px;overflow:auto;display:none;background:rgba(0,0,0,0.5);padding:5px;border-radius:3px;"></div>
-            `;
-            
-            // ボディの最後に追加
-            document.body.appendChild(debugBar);
-            
-            // ボタンのイベントリスナーを設定
-            document.getElementById('debug-toggle-animations').addEventListener('click', function() {
-                var btn = this;
-                var allAnimations = [];
-                
-                // すべてのスタイルシートのアニメーションルールを取得
-                for (var i = 0; i < document.styleSheets.length; i++) {
-                    try {
-                        var sheet = document.styleSheets[i];
-                        var rules = sheet.cssRules || sheet.rules;
-                        if (!rules) continue;
-                        
-                        for (var j = 0; j < rules.length; j++) {
-                            var rule = rules[j];
-                            // CSSアニメーションを検出
-                            if (rule.type === CSSRule.KEYFRAMES_RULE || 
-                                rule.cssText && rule.cssText.indexOf('@keyframes') >= 0) {
-                                allAnimations.push({
-                                    name: rule.name,
-                                    cssText: rule.cssText
-                                });
-                            }
-                        }
-                    } catch(e) {
-                        console.error('CSSルール読み取りエラー:', e);
-                    }
-                }
-                
-                // アニメーションの停止と再開を切り替え
-                var style = document.createElement('style');
-                if (btn.textContent === 'アニメーション停止') {
-                    style.textContent = '*, *::before, *::after { animation-play-state: paused !important; transition: none !important; }';
-                    document.head.appendChild(style);
-                    style.id = 'debug-animation-pause';
-                    btn.textContent = 'アニメーション再開';
-                    btn.style.background = '#4CAF50';
-                    
-                    // アニメーションリストを表示
-                    var output = document.getElementById('debug-output');
-                    output.style.display = 'block';
-                    output.innerHTML = '<h4>検出されたアニメーション:</h4><ul style="margin:0;padding-left:20px;">' + 
-                        allAnimations.map(function(anim) {
-                            return '<li style="margin-bottom:5px;">' + anim.name + '</li>';
-                        }).join('') + '</ul>';
-                    
-                    document.getElementById('debug-info').textContent = 'アニメーション一時停止中 (' + allAnimations.length + '個検出)';
-                } else {
-                    var pauseStyle = document.getElementById('debug-animation-pause');
-                    if (pauseStyle) pauseStyle.remove();
-                    btn.textContent = 'アニメーション停止';
-                    btn.style.background = '#f44336';
-                    document.getElementById('debug-info').textContent = 'アニメーション実行中';
-                    document.getElementById('debug-output').style.display = 'none';
-                }
-            });
-            
-            document.getElementById('debug-highlight-css').addEventListener('click', function() {
-                var btn = this;
-                var highlightStyle = document.getElementById('debug-highlight-style');
-                
-                if (!highlightStyle) {
-                    // 各要素に枠線を付けて表示
-                    highlightStyle = document.createElement('style');
-                    highlightStyle.id = 'debug-highlight-style';
-                    highlightStyle.textContent = `
-                        * { outline: 1px solid rgba(255,0,0,0.2) !important; }
-                        *:hover { outline: 2px solid rgba(255,0,0,0.8) !important; background: rgba(255,0,0,0.1) !important; }
-                    `;
-                    document.head.appendChild(highlightStyle);
-                    btn.textContent = 'ハイライト解除';
-                    btn.style.background = '#ff9800';
-                    document.getElementById('debug-info').textContent = 'CSS要素ハイライト表示中';
-                } else {
-                    highlightStyle.remove();
-                    btn.textContent = 'CSSハイライト';
-                    btn.style.background = '#2196F3';
-                    document.getElementById('debug-info').textContent = 'デバッグモード';
-                }
-            });
-            
-            document.getElementById('debug-show-styles').addEventListener('click', function() {
-                var output = document.getElementById('debug-output');
-                output.style.display = output.style.display === 'none' ? 'block' : 'none';
-                
-                if (output.style.display === 'block') {
-                    // 外部スタイルシートの情報を収集
-                    var styleInfo = [];
-                    for (var i = 0; i < document.styleSheets.length; i++) {
-                        try {
-                            var sheet = document.styleSheets[i];
-                            styleInfo.push({
-                                href: sheet.href || 'インライン',
-                                rules: sheet.cssRules ? sheet.cssRules.length : 0,
-                                disabled: sheet.disabled
-                            });
-                        } catch(e) {
-                            styleInfo.push({
-                                href: sheet.href || 'インラインCORS制限',
-                                error: e.message,
-                                disabled: sheet.disabled
-                            });
-                        }
-                    }
-                    
-                    output.innerHTML = '<h4>CSS情報:</h4><ul style="margin:0;padding-left:20px;">' + 
-                        styleInfo.map(function(info) {
-                            var status = info.disabled ? '無効' : '有効';
-                            var error = info.error ? ' - エラー: ' + info.error : '';
-                            var rules = info.rules !== undefined ? ' (' + info.rules + 'ルール)' : '';
-                            return '<li style="margin-bottom:5px;">' + info.href + rules + ' - ' + status + error + '</li>';
-                        }).join('') + '</ul>';
-                }
-            });
-            
-            // 閉じるボタン
-            document.getElementById('debug-close').addEventListener('click', function() {
-                var debugBar = document.getElementById('css-debug-toolbar');
-                if (debugBar) debugBar.remove();
-                
-                // 追加したスタイルも削除
-                var pauseStyle = document.getElementById('debug-animation-pause');
-                if (pauseStyle) pauseStyle.remove();
-                
-                var highlightStyle = document.getElementById('debug-highlight-style');
-                if (highlightStyle) highlightStyle.remove();
-            });
-            
-            console.log('CSS診断ツール初期化完了');
-        } catch(err) {
-            console.error('CSS診断ツール初期化エラー:', err);
-        }
-    }
-
-    // DOMの準備ができたらデバッガーを追加
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        setTimeout(addCssDebugger, 1000);
-    } else {
-        document.addEventListener('DOMContentLoaded', function() {
-            setTimeout(addCssDebugger, 1000);
-        });
-    }
-})();
-</script>
-        """
-        
-        # TikTokピクセル用のスクリプト
-        tiktok_pixel_script = f"""
-<script>
-(function() {{
-    // TikTokピクセルコードの実行を行う関数
-    function injectTikTokPixel() {{
-        try {{
-            // インラインでスクリプトタグを作成して挿入
-            var script = document.createElement('script');
-            script.innerHTML = `
-                !function (w, d, t) {{
-                    w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}};ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
-                    ttq.load('CM0EQKBC77U7DDDCEF4G');
-                    ttq.page();
-                }}(window, document, 'ttq');
-            `;
-            document.head.appendChild(script);
-            console.log('[TikTok]: ピクセル設定完了');
-        }} catch(err) {{
-            // エラーを非表示にして、メインページに影響を与えないようにする
-            console.error('[TikTok]: Pixel設定エラー', err);
-        }}
-    }}
-
-    // ページの読み込みステータスに応じた実行タイミング制御
-    if (document.readyState === 'complete') {{
-        // すでにページが読み込み完了している場合
-        setTimeout(injectTikTokPixel, 2000);
-    }} else {{
-        // ページ読み込み完了後に実行
-        window.addEventListener('load', function() {{
-            setTimeout(injectTikTokPixel, 2000);
-        }});
-    }}
-}})();
-</script>
-        """
-        
-        # YouTubeの場合は表示をそのまま返す
-        if target_url.get('youtube'):
-            return html_content
-        
-        # TikTokピクセルコードをheadタグに追加
-        head_end_pos = html_content.find('</head>')
-        if head_end_pos != -1:
-            html_content = html_content[:head_end_pos] + tiktok_pixel_script + css_debug_script + html_content[head_end_pos:]
-        else:
-            # headタグがない場合はbodyタグの直後に挿入
-            body_start_pos = html_content.find('<body')
-            if body_start_pos != -1:
-                body_end_bracket = html_content.find('>', body_start_pos)
-                if body_end_bracket != -1:
-                    html_content = html_content[:body_end_bracket + 1] + tiktok_pixel_script + css_debug_script + html_content[body_end_bracket + 1:]
-            else:
-                # どちらもない場合はHTMLの先頭に追加
-                html_content = tiktok_pixel_script + css_debug_script + html_content
+        if not html_content:
+            return render_template('error.html', error="コンテンツの読み込みに失敗しました"), 500
         
         # クリック数を更新
         update_click_count(file_id)
         
+        # YouTubeコンテンツの場合は特別な処理をしない
+        if target_url.get('youtube'):
+            return html_content
+        
+        # HTML charset指定の確認
+        if 'charset=' not in html_content:
+            # charsetメタタグがない場合は追加
+            head_end_pos = html_content.find('</head>')
+            if head_end_pos > 0:
+                html_content = html_content[:head_end_pos] + '\n<meta charset="UTF-8">\n' + html_content[head_end_pos:]
+        
         # レスポンスを返す
         response = make_response(html_content)
         response.headers['Content-Type'] = 'text/html; charset=utf-8'
+        
+        # キャッシュ制御ヘッダー
+        # プライベートキャッシュは許可するが、共有キャッシュは不可（CDNなど）
+        response.headers['Cache-Control'] = 'private, max-age=3600'
+        
         return response
+        
     except Exception as e:
-        app.logger.error(f"ファイル読み込みエラー: {str(e)}")
-        return render_template('error.html', error="ファイルの読み込み中にエラーが発生しました"), 500
+        app.logger.error(f"ファイル表示エラー: {str(e)}", exc_info=True)
+        return render_template('error.html', error="コンテンツの表示中にエラーが発生しました"), 500
 
 @app.route('/delete/<file_id>', methods=['POST'])
 def delete(file_id):
-    file_path = os.path.join(URLS_DIR, f"{file_id}.html")
     try:
+        # URLリストから該当エントリを取得
+        url_list = get_url_list()
+        target_url = None
+        updated_list = []
+        
+        for url in url_list:
+            if url.get('id') == file_id:
+                target_url = url
+            else:
+                updated_list.append(url)
+        
+        if not target_url:
+            flash('指定されたURLが見つかりませんでした。', 'error')
+            return redirect(url_for('index'))
+        
+        # Blobストレージのファイルを削除
+        if target_url.get('blob_url'):
+            blob_deleted = run_async(blob_delete(target_url['blob_url']))
+            if blob_deleted:
+                app.logger.info(f"Blobから削除: {target_url['blob_url']}")
+            else:
+                app.logger.warning(f"Blob削除失敗: {target_url['blob_url']}")
+        
+        # 後方互換性: ファイルを削除
+        file_path = os.path.join(URLS_DIR, f"{file_id}.html")
         if os.path.exists(file_path):
             os.remove(file_path)
+            app.logger.info(f"ファイルから削除: {file_path}")
         
-        # キャッシュから削除
-        # キャッシュキーを直接指定して削除
-        cache.delete(f'view/{file_id}')
+        # クリック数の削除
+        run_async(kv_del(f'clicks:{file_id}'))
         
-        url_list = get_url_list()
-        url_list = [url for url in url_list if url['id'] != file_id]
-        
-        if save_url_list(url_list):
+        # リストを更新
+        if save_url_list(updated_list):
             flash('URLが正常に削除されました！', 'success')
         else:
             flash('URLリストの更新中にエラーが発生しました。', 'error')
         
+        # キャッシュから削除
+        cache.delete(f'view/{file_id}')
+        
         return redirect(url_for('index'))
     except Exception as e:
-        app.logger.error(f"URL削除エラー: {str(e)}")
+        app.logger.error(f"URL削除エラー: {str(e)}", exc_info=True)
         flash(f'削除中にエラーが発生しました: {str(e)}', 'error')
         return redirect(url_for('index'))
 
@@ -1025,7 +1005,7 @@ def fix_relative_paths(html_content, base_domain, original_url):
                 # url() パターンを検索して絶対パスに変換
                 style_content = style_tag.string
                 # url(...) パターンを抽出
-                url_pattern = re.compile(r'url\([\'"]?([^\'")]+)[\'"]?\)')
+                url_pattern = re.compile(r'url\([\'"]?([^\'" \)]+)[\'"]?\)')
                 
                 def replace_url(match):
                     url = match.group(1)
@@ -1042,7 +1022,7 @@ def fix_relative_paths(html_content, base_domain, original_url):
         for tag in soup.find_all(attrs={"style": True}):
             style_content = tag['style']
             # url() パターンを抽出
-            url_pattern = re.compile(r'url\([\'"]?([^\'")]+)[\'"]?\)')
+            url_pattern = re.compile(r'url\([\'"]?([^\'" \)]+)[\'"]?\)')
             
             def replace_url(match):
                 url = match.group(1)
@@ -1137,35 +1117,6 @@ def process_srcset(srcset_value, base_url):
         new_parts.append(new_part)
         
     return ', '.join(new_parts)
-
-# クリック数を更新する関数
-def update_click_count(file_id):
-    """URLのクリック数を更新する"""
-    try:
-        url_list = get_url_list()
-        for url in url_list:
-            if url.get('id') == file_id:
-                # クリック数がない場合は初期化
-                if 'clicks' not in url:
-                    url['clicks'] = 0
-                # クリック数を増加
-                url['clicks'] += 1
-                # 最終アクセス日時を更新
-                url['last_accessed'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                save_url_list(url_list)
-                break
-    except Exception as e:
-        app.logger.error(f"クリック数更新エラー: {str(e)}")
-
-# 設定を取得する関数
-def get_config():
-    """アプリケーション設定を取得する"""
-    # 将来的に設定ファイルから読み込むなどの対応が可能
-    return {
-        'site_name': 'URL変換サービス',
-        'default_ttl': 86400 * 30,  # 30日
-        'max_urls': 100
-    }
 
 if __name__ == '__main__':
     app.run(debug=True) 
