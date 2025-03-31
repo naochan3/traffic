@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, make_response
+from flask import Flask, render_template, request, redirect, url_for, flash, make_response, jsonify
 import os
 import requests
 from bs4 import BeautifulSoup
@@ -936,6 +936,7 @@ def page_not_found(e):
 
 @app.errorhandler(500)
 def internal_server_error(e):
+    app.logger.error(f"500エラー発生: {str(e)}", exc_info=True)
     return render_template('error.html', error="サーバーエラーが発生しました"), 500
 
 # リソース使用状況をクリアするエンドポイント（メンテナンス用）
@@ -1117,6 +1118,24 @@ def process_srcset(srcset_value, base_url):
         new_parts.append(new_part)
         
     return ', '.join(new_parts)
+
+# Vercel環境変数確認（デバッグ用）
+@app.route('/check-env')
+def check_env():
+    try:
+        env_info = {
+            "KV_REST_API_URL": KV_REST_API_URL is not None,
+            "KV_REST_API_TOKEN": KV_REST_API_TOKEN is not None,
+            "BLOB_READ_WRITE_TOKEN": BLOB_READ_WRITE_TOKEN is not None,
+            "VERCEL_ENV": os.environ.get('VERCEL_ENV'),
+            "URLS_DIR": URLS_DIR,
+            "URLS_DIR_EXISTS": os.path.exists(URLS_DIR),
+            "URL_LIST_FILE_EXISTS": os.path.exists(URL_LIST_FILE)
+        }
+        return jsonify(env_info)
+    except Exception as e:
+        app.logger.error(f"環境変数確認エラー: {str(e)}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True) 
