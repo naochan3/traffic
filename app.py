@@ -245,17 +245,7 @@ except Exception as e:
 def get_url_list():
     """保存されたURLリストを取得 (Vercel KV & 後方互換性)"""
     try:
-        # まずVercel KVから取得を試みる
-        if kv:
-            try:
-                url_list = run_async(kv_get('url_list'))
-                if url_list:
-                    app.logger.info("KVストレージからURLリストを取得しました")
-                    return url_list
-            except Exception as e:
-                app.logger.error(f"KVストレージからのURLリスト取得エラー: {str(e)}")
-        
-        # KVに接続できない場合はファイルから読み込む
+        # ローカル環境ではURLリストファイルから読み込む
         try:
             if os.path.exists(URL_LIST_FILE):
                 with open(URL_LIST_FILE, 'r') as f:
@@ -263,7 +253,16 @@ def get_url_list():
                     app.logger.info(f"ファイルからURLリストを取得しました: {URL_LIST_FILE}")
                     return url_list
             else:
+                # ファイルが存在しない場合は新しい空のリストを返す
                 app.logger.warning(f"URLリストファイルが存在しません: {URL_LIST_FILE}")
+                # Vercel環境では初回実行時にファイルを作成
+                if os.environ.get('VERCEL') == '1':
+                    try:
+                        with open(URL_LIST_FILE, 'w') as f:
+                            json.dump([], f)
+                        app.logger.info(f"新しいURLリストファイルを作成しました: {URL_LIST_FILE}")
+                    except Exception as e:
+                        app.logger.warning(f"新しいURLリストファイル作成に失敗: {str(e)}")
                 return []
         except Exception as e:
             app.logger.error(f"URLリストファイル読み込みエラー: {str(e)}")
@@ -276,18 +275,14 @@ def get_url_list():
 def save_url_list(url_list):
     """URLリストを保存 (Vercel KV & 後方互換性)"""
     try:
-        kv_result = False
+        # URL内のblobオブジェクトがcoroutineでないことを確認
+        for url in url_list:
+            # coroutineオブジェクトを文字列に変換
+            if 'blob_url' in url and asyncio.iscoroutine(url['blob_url']):
+                app.logger.warning(f"coroutineオブジェクトを文字列に変換します: {url['blob_url']}")
+                url['blob_url'] = str(url['blob_url'])
         
-        # まずVercel KVへの保存を試みる
-        if kv:
-            try:
-                kv_result = run_async(kv_set('url_list', url_list))
-                if kv_result:
-                    app.logger.info("URLリストをKVストレージに保存しました")
-            except Exception as e:
-                app.logger.error(f"KVストレージへのURLリスト保存エラー: {str(e)}")
-        
-        # ファイルにも保存（後方互換性）
+        # ファイルに保存（後方互換性）
         file_saved = False
         try:
             with open(URL_LIST_FILE, 'w') as f:
@@ -298,13 +293,20 @@ def save_url_list(url_list):
             # Vercel環境ではファイル書き込みエラーは許容
             if os.environ.get('VERCEL') == '1':
                 app.logger.warning(f"Vercel環境でのURLリストファイル保存をスキップ: {str(e)}")
-                # KVに保存できていれば成功とみなす
-                return kv_result
+                # tmpディレクトリに保存を試みる
+                try:
+                    os.makedirs(os.path.dirname(URL_LIST_FILE), exist_ok=True)
+                    with open(URL_LIST_FILE, 'w') as f:
+                        json.dump(url_list, f)
+                    app.logger.info(f"URLリストをtmpディレクトリに保存しました: {URL_LIST_FILE}")
+                    file_saved = True
+                except Exception as tmp_err:
+                    app.logger.error(f"tmpディレクトリへのURLリストファイル保存エラー: {str(tmp_err)}")
             else:
                 app.logger.error(f"URLリストファイル保存エラー: {str(e)}")
                 file_saved = False
             
-        return kv_result or file_saved
+        return file_saved
     except Exception as e:
         app.logger.error(f"URLリスト保存エラー: {str(e)}")
         return False
@@ -471,6 +473,19 @@ def create():
                 # 同期関数として実装したblob_putを直接呼び出す
                 blob_url = blob_put(file_name, new_html)
                 app.logger.info(f"Blob保存結果: {blob_url if blob_url else 'None'}")
+                
+                # coroutineオブジェクトが返された場合の対応
+                if asyncio.iscoroutine(blob_url):
+                    app.logger.warning("blob_putがcoroutineを返しました。同期的に実行します。")
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        blob_url = loop.run_until_complete(blob_url)
+                        loop.close()
+                        app.logger.info(f"coroutineを実行した結果: {blob_url}")
+                    except Exception as coroutine_err:
+                        app.logger.error(f"coroutineの実行中にエラーが発生: {str(coroutine_err)}")
+                        blob_url = None
             else:
                 app.logger.error(f"BLOB_READ_WRITE_TOKENが設定されていないか不正な値です: {blob_token[:5] if blob_token else 'None'}")
         except Exception as e:
