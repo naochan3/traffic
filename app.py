@@ -467,8 +467,7 @@ def create():
                 script_matches = script_pattern.findall(pixel_code)
                 if script_matches:
                     script_content = script_matches[0]
-                    # スクリプト内容をサニタイズ（最低限の対策）
-                    script_content = script_content.replace('<', '&lt;').replace('>', '&gt;')
+                    # スクリプト内容はエスケープせずにそのまま使用
                     pixel_script = f"<script>\n{script_content}\n</script>"
                 else:
                     # スクリプトタグはあるが内容がない場合
