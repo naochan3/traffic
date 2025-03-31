@@ -4,6 +4,4 @@ requests==2.31.0
 gunicorn==20.1.0
 flask-caching==2.0.2
 html5lib>=1.1
-python-dotenv==1.0.0
-@vercel/kv==0.2.4
-@vercel/blob==0.12.5 
+python-dotenv==1.0.0 
