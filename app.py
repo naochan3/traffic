@@ -78,12 +78,23 @@ try:
     
     # 環境変数の確認
     app.logger.info(f"VERCEL環境変数: {os.environ.get('VERCEL')}")
-    app.logger.info(f"KV_REST_API_URL設定: {'有効' if os.environ.get('KV_REST_API_URL') else '未設定'}")
-    app.logger.info(f"KV_REST_API_TOKEN設定: {'有効' if os.environ.get('KV_REST_API_TOKEN') else '未設定'}")
-    app.logger.info(f"BLOB_READ_WRITE_TOKEN設定: {'有効' if os.environ.get('BLOB_READ_WRITE_TOKEN') else '未設定'}")
+    kv_url = os.environ.get('KV_REST_API_URL')
+    kv_token = os.environ.get('KV_REST_API_TOKEN')
+    blob_token = os.environ.get('BLOB_READ_WRITE_TOKEN')
+    
+    app.logger.info(f"KV_REST_API_URL設定: {'有効 (長さ:' + str(len(kv_url)) + ')' if kv_url else '未設定'}")
+    app.logger.info(f"KV_REST_API_TOKEN設定: {'有効 (長さ:' + str(len(kv_token)) + ')' if kv_token else '未設定'}")
+    app.logger.info(f"BLOB_READ_WRITE_TOKEN設定: {'有効 (長さ:' + str(len(blob_token)) + ')' if blob_token else '未設定'}")
 
+    # トークンの有効性をさらに詳細にチェック
+    if blob_token:
+        if len(blob_token) < 20 or not blob_token.startswith('vercel_blob_rw_'):
+            app.logger.warning(f"BLOB_READ_WRITE_TOKENの形式が不正と思われます: {blob_token[:15]}...")
+        else:
+            app.logger.info("BLOB_READ_WRITE_TOKENの形式は正常と思われます")
+    
     # KV Storeへの接続
-    kv = VercelKV() if os.environ.get('KV_REST_API_URL') and os.environ.get('KV_REST_API_TOKEN') else None
+    kv = VercelKV() if kv_url and kv_token else None
     
     # Blob機能のラッパー関数
     async def blob_put(key, data):
@@ -165,7 +176,11 @@ try:
             app.logger.warning(f"coroutineではないオブジェクトが渡されました: {type(coroutine)}")
             return coroutine
         
-        return loop.run_until_complete(coroutine)
+        try:
+            return loop.run_until_complete(coroutine)
+        except Exception as e:
+            app.logger.error(f"coroutine実行中のエラー: {str(e)}")
+            return None
         
     app.logger.info("Vercel KV/Blobストレージが利用可能です")
 except ImportError as e:
@@ -350,7 +365,7 @@ def generate_tiktok_pixel_script(pixel_id_or_code):
         return f"""
 <script>
 !function (w, d, t) {{
-  w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}}}; for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++\)ttq.setAndDefer(e,ttq.methods[n]);return e}},ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
+  w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}}}; for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}},ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
   ttq.load('{pixel_id}');
   ttq.page();
 }}(window, document, 'ttq');
@@ -444,7 +459,8 @@ def create():
         blob_url = None
         try:
             app.logger.info(f"Blobストレージの保存を開始: ファイル名={file_name}, サイズ={len(new_html)} バイト")
-            if os.environ.get('BLOB_READ_WRITE_TOKEN'):
+            blob_token = os.environ.get('BLOB_READ_WRITE_TOKEN')
+            if blob_token and len(blob_token) > 10:  # トークンが実際に存在し有効な長さがあることを確認
                 # run_asyncでブロブへの保存を実行
                 coroutine = blob_put(file_name, new_html)
                 if asyncio.iscoroutine(coroutine):
@@ -453,7 +469,7 @@ def create():
                 else:
                     app.logger.error("blob_putがコルーチンを返しませんでした")
             else:
-                app.logger.error("BLOB_READ_WRITE_TOKENが設定されていません")
+                app.logger.error(f"BLOB_READ_WRITE_TOKENが設定されていないか不正な値です: {blob_token[:5] if blob_token else 'None'}")
         except Exception as e:
             app.logger.error(f"Blob保存処理中の例外: {str(e)}", exc_info=True)
             blob_url = None
@@ -463,15 +479,23 @@ def create():
             if os.environ.get('VERCEL') == '1':
                 # Vercel環境でのエラー詳細
                 env_details = ""
-                if not os.environ.get('BLOB_READ_WRITE_TOKEN'):
+                blob_token = os.environ.get('BLOB_READ_WRITE_TOKEN', '')
+                
+                if not blob_token:
                     env_details = "BLOB_READ_WRITE_TOKEN環境変数が設定されていません。"
+                elif len(blob_token) < 20:
+                    env_details = f"BLOB_READ_WRITE_TOKENの値が短すぎます(長さ:{len(blob_token)})。有効なトークンを設定してください。"
+                elif not blob_token.startswith('vercel_blob_rw_'):
+                    env_details = "BLOB_READ_WRITE_TOKENの形式が不正です。Vercelダッシュボードで新しいBlobストレージを作成してください。"
+                else:
+                    env_details = "BLOB_READ_WRITE_TOKENが設定されていますが、Blobストレージへの接続に失敗しました。トークンが有効か確認してください。"
                 
                 # エラー詳細をより詳しく表示
                 error_msg = f"Vercel環境でBlobストレージが使用できません。{env_details} Vercelダッシュボードで環境変数を確認してください。"
                 app.logger.error(error_msg)
                 
                 # デバッグ情報ページへのリンクを含めたエラーメッセージ
-                flash(f'サーバー設定エラー: Blobストレージが利用できません。{env_details} 環境変数を確認してください。', 'error')
+                flash(f'サーバー設定エラー: Blobストレージが利用できません。{env_details} Vercelダッシュボードの「Settings」→「Environment Variables」で環境変数を確認してください。', 'error')
                 return redirect(url_for('index'))
             
             # ローカル環境の場合はファイルに保存
