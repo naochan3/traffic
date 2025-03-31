@@ -18,11 +18,15 @@ PORT = int(os.environ.get('PORT', 8080))
 
 # アプリケーションディレクトリ
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_FOLDER = os.path.join(BASE_DIR, 'urls')
+# Vercel環境ではファイルシステムが読み取り専用なのでtmpディレクトリを使用
+if os.environ.get('VERCEL') == '1':
+    UPLOAD_FOLDER = '/tmp/urls'
+else:
+    UPLOAD_FOLDER = os.path.join(BASE_DIR, 'urls')
 STATIC_FOLDER = os.path.join(BASE_DIR, 'static')
 TEMPLATE_FOLDER = os.path.join(BASE_DIR, 'templates')
-CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
-URL_LIST_FILE = os.path.join(BASE_DIR, 'url_list.json')
+CONFIG_FILE = os.path.join(BASE_DIR, 'config.json') if not os.environ.get('VERCEL') == '1' else '/tmp/config.json'
+URL_LIST_FILE = os.path.join(BASE_DIR, 'url_list.json') if not os.environ.get('VERCEL') == '1' else '/tmp/url_list.json'
 
 # URLsディレクトリを作成（存在しない場合）
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -188,8 +192,16 @@ def get_url_list():
             return url_list
         
         # KVに接続できない場合はファイルから読み込む
-        with open(URL_LIST_FILE, 'r') as f:
-            return json.load(f)
+        try:
+            if os.path.exists(URL_LIST_FILE):
+                with open(URL_LIST_FILE, 'r') as f:
+                    return json.load(f)
+            else:
+                app.logger.warning(f"URLリストファイルが存在しません: {URL_LIST_FILE}")
+                return []
+        except Exception as e:
+            app.logger.error(f"URLリストファイル読み込みエラー: {str(e)}")
+            return []
     except Exception as e:
         app.logger.error(f"URLリスト取得エラー: {str(e)}")
         # エラーが発生した場合は空のリストを返す
@@ -202,8 +214,19 @@ def save_url_list(url_list):
         kv_result = run_async(kv_set('url_list', url_list))
         
         # ファイルにも保存（後方互換性）
-        with open(URL_LIST_FILE, 'w') as f:
-            json.dump(url_list, f)
+        try:
+            with open(URL_LIST_FILE, 'w') as f:
+                json.dump(url_list, f)
+            app.logger.info(f"URLリストをファイルに保存しました: {URL_LIST_FILE}")
+        except Exception as e:
+            # Vercel環境ではファイル書き込みエラーは許容
+            if os.environ.get('VERCEL') == '1':
+                app.logger.warning(f"Vercel環境でのURLリストファイル保存をスキップ: {str(e)}")
+                # KVに保存できていれば成功とみなす
+                return kv_result is not None
+            else:
+                app.logger.error(f"URLリストファイル保存エラー: {str(e)}")
+                return False
             
         return True
     except Exception as e:
@@ -367,11 +390,22 @@ def create():
         blob_url = run_async(blob_put(file_name, new_html))
         
         if not blob_url:
-            # Blobストレージが利用できない場合はファイルに保存
+            # Vercel環境ではBlobストレージは必須
+            if os.environ.get('VERCEL') == '1':
+                app.logger.error("Vercel環境でBlobストレージが使用できません。環境変数を確認してください。")
+                flash('サーバー設定エラー: Blobストレージが利用できません', 'error')
+                return redirect(url_for('index'))
+            
+            # ローカル環境の場合はファイルに保存
             file_path = os.path.join(UPLOAD_FOLDER, file_name)
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(new_html)
-            app.logger.warning("Blobストレージが使用できないため、ファイルに保存しました")
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(new_html)
+                app.logger.warning("Blobストレージが使用できないため、ファイルに保存しました")
+            except Exception as e:
+                app.logger.error(f"ファイル保存エラー: {str(e)}")
+                flash(f'ファイル保存エラー: {str(e)}', 'error')
+                return redirect(url_for('index'))
         
         # URLリストに追加
         url_list = get_url_list()
@@ -454,43 +488,57 @@ def view(file_id):
         # 1. BlobストレージからHTMLコンテンツを取得
         if target_url.get('blob_url'):
             app.logger.info(f"Blobストレージからコンテンツを取得: {target_url['blob_url']}")
-            html_content = run_async(blob_get(target_url['blob_url']))
+            try:
+                html_content = run_async(blob_get(target_url['blob_url']))
+            except Exception as e:
+                app.logger.error(f"Blobからのコンテンツ取得に失敗: {str(e)}")
         
         # 2. Blobが存在しない、または取得に失敗した場合はファイルから読み込み
         if not html_content:
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id + '.html')
+            app.logger.info(f"ファイルからコンテンツを取得: {file_path}")
+            
             if not os.path.exists(file_path):
                 app.logger.error(f"HTML file not found: {file_path}")
                 return render_template('error.html', error="ファイルが見つかりません"), 404
             
             # ファイルからHTMLコンテンツを読み込み
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    html_content = f.read()
-            except UnicodeDecodeError:
-                # UTF-8で読めない場合はバイナリモードで読み込み
-                with open(file_path, 'rb') as f:
-                    raw_content = f.read()
-                
-                # エンコーディングを推測
-                encodings = ['utf-8', 'shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
-                for encoding in encodings:
-                    try:
-                        html_content = raw_content.decode(encoding)
-                        app.logger.info(f"エンコーディング検出: {encoding}")
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                
-                # どのエンコーディングでも読み込めなかった場合
-                if not html_content:
-                    html_content = raw_content.decode('utf-8', errors='replace')
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        html_content = f.read()
+                except UnicodeDecodeError:
+                    # UTF-8で読めない場合はバイナリモードで読み込み
+                    with open(file_path, 'rb') as f:
+                        raw_content = f.read()
+                    
+                    # エンコーディングを推測
+                    encodings = ['utf-8', 'shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
+                    for encoding in encodings:
+                        try:
+                            html_content = raw_content.decode(encoding)
+                            app.logger.info(f"エンコーディング検出: {encoding}")
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    
+                    # どのエンコーディングでも読み込めなかった場合
+                    if not html_content:
+                        html_content = raw_content.decode('utf-8', errors='replace')
+                        app.logger.warning(f"不明なエンコーディング、置換モードで読み込み")
+            except Exception as e:
+                app.logger.error(f"ファイル読み込みエラー: {str(e)}")
+                return render_template('error.html', error=f"コンテンツの読み込みに失敗しました: {str(e)}"), 500
         
         if not html_content:
             return render_template('error.html', error="コンテンツの読み込みに失敗しました"), 500
         
         # クリック数を更新
-        update_click_count(file_id)
+        try:
+            update_click_count(file_id)
+        except Exception as e:
+            app.logger.error(f"クリック数更新エラー: {str(e)}")
+            # 更新失敗は無視する
         
         # レスポンスを返す
         response = make_response(html_content)
@@ -520,12 +568,23 @@ def delete(file_id):
             
             # Blobストレージから削除
             if target_url.get('blob_url'):
-                run_async(blob_delete(target_url['blob_url']))
+                try:
+                    blob_deleted = run_async(blob_delete(target_url['blob_url']))
+                    app.logger.info(f"Blobストレージからファイルを削除: {target_url['blob_url']}, 結果: {blob_deleted}")
+                except Exception as e:
+                    app.logger.error(f"Blobストレージからの削除に失敗: {str(e)}")
             
             # ファイルも削除（後方互換性のため）
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id + '.html')
             if os.path.exists(file_path):
-                os.remove(file_path)
+                try:
+                    os.remove(file_path)
+                    app.logger.info(f"ファイルシステムからファイルを削除: {file_path}")
+                except Exception as e:
+                    app.logger.error(f"ファイルシステムからの削除に失敗: {str(e)}")
+                    # Vercel環境での削除エラーは無視
+                    if os.environ.get('VERCEL') != '1':
+                        flash(f'ファイル削除エラー: {str(e)}', 'warning')
             
             # URLリストを保存
             if save_url_list(url_list):
