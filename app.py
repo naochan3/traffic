@@ -8,6 +8,7 @@ from datetime import datetime
 from functools import wraps
 from urllib.parse import urlparse
 import re
+import sys
 
 from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, make_response, session, abort
 
@@ -55,8 +56,30 @@ if not DEBUG:
 
 # Vercel KV/Blobストレージのサポート
 try:
+    app.logger.info("Vercel Blob/KV関連モジュールのインポートを試みます")
+    app.logger.info(f"Pythonバージョン: {sys.version}")
+    app.logger.info(f"sys.path: {sys.path}")
+    
+    try:
+        import vercel_kv
+        app.logger.info(f"vercel_kv バージョン: {vercel_kv.__version__ if hasattr(vercel_kv, '__version__') else '不明'}")
+    except ImportError as e:
+        app.logger.error(f"vercel_kv インポートエラー: {str(e)}")
+    
+    try:
+        import vercel_blob
+        app.logger.info(f"vercel_blob バージョン: {vercel_blob.__version__ if hasattr(vercel_blob, '__version__') else '不明'}")
+    except ImportError as e:
+        app.logger.error(f"vercel_blob インポートエラー: {str(e)}")
+    
     from vercel_kv import VercelKV
     from vercel_blob import put, get, list, del_
+    
+    # 環境変数の確認
+    app.logger.info(f"VERCEL環境変数: {os.environ.get('VERCEL')}")
+    app.logger.info(f"KV_REST_API_URL設定: {'有効' if os.environ.get('KV_REST_API_URL') else '未設定'}")
+    app.logger.info(f"KV_REST_API_TOKEN設定: {'有効' if os.environ.get('KV_REST_API_TOKEN') else '未設定'}")
+    app.logger.info(f"BLOB_READ_WRITE_TOKEN設定: {'有効' if os.environ.get('BLOB_READ_WRITE_TOKEN') else '未設定'}")
 
     # KV Storeへの接続
     kv = VercelKV() if os.environ.get('KV_REST_API_URL') and os.environ.get('KV_REST_API_TOKEN') else None
@@ -65,12 +88,16 @@ try:
     async def blob_put(key, data):
         if os.environ.get('BLOB_READ_WRITE_TOKEN'):
             try:
+                app.logger.info(f"Blobストレージにファイルを保存: {key} (サイズ: {len(data) if data else 0}バイト)")
                 result = await put(key, data, {'access': 'public'})
+                app.logger.info(f"Blob保存結果: {result.url if result else 'None'}")
                 return result.url
             except Exception as e:
                 app.logger.error(f"Blobストレージエラー (put): {str(e)}")
                 return None
-        return None
+        else:
+            app.logger.error("BLOB_READ_WRITE_TOKENが設定されていません")
+            return None
         
     async def blob_get(url):
         if os.environ.get('BLOB_READ_WRITE_TOKEN'):
@@ -132,9 +159,10 @@ try:
         return loop.run_until_complete(coroutine)
         
     app.logger.info("Vercel KV/Blobストレージが利用可能です")
-except ImportError:
+except ImportError as e:
     # KV/Blob機能が利用できない場合は、ダミー関数を提供
-    app.logger.warning("Vercel KV/Blobストレージが利用できません")
+    app.logger.error(f"Vercel KV/Blobストレージのインポートに失敗: {str(e)}")
+    app.logger.warning("互換性のためのダミー関数を提供します")
     kv = None
     
     async def blob_put(key, data):
@@ -387,13 +415,28 @@ def create():
         file_name = f"{file_id}.html"
         
         # Vercel Blobにコンテンツを保存
-        blob_url = run_async(blob_put(file_name, new_html))
+        try:
+            app.logger.info(f"Blobストレージの保存を開始: ファイル名={file_name}, サイズ={len(new_html)} バイト")
+            blob_url = run_async(blob_put(file_name, new_html))
+            app.logger.info(f"Blob保存結果: {blob_url if blob_url else 'None'}")
+        except Exception as e:
+            app.logger.error(f"Blob保存処理中の例外: {str(e)}", exc_info=True)
+            blob_url = None
         
         if not blob_url:
-            # Vercel環境ではBlobストレージは必須
+            # Vercel環境ではBlobストレージは必須だが、ローカル開発用に条件分岐
             if os.environ.get('VERCEL') == '1':
-                app.logger.error("Vercel環境でBlobストレージが使用できません。環境変数を確認してください。")
-                flash('サーバー設定エラー: Blobストレージが利用できません', 'error')
+                # Vercel環境でのエラー詳細
+                env_details = ""
+                if not os.environ.get('BLOB_READ_WRITE_TOKEN'):
+                    env_details = "BLOB_READ_WRITE_TOKEN環境変数が設定されていません。"
+                
+                # エラー詳細をより詳しく表示
+                error_msg = f"Vercel環境でBlobストレージが使用できません。{env_details} Vercelダッシュボードで環境変数を確認してください。"
+                app.logger.error(error_msg)
+                
+                # デバッグ情報ページへのリンクを含めたエラーメッセージ
+                flash(f'サーバー設定エラー: Blobストレージが利用できません。{env_details} 環境変数を確認してください。', 'error')
                 return redirect(url_for('index'))
             
             # ローカル環境の場合はファイルに保存
@@ -656,6 +699,87 @@ def page_not_found(e):
 @app.errorhandler(500)
 def server_error(e):
     return render_template('error.html', error="サーバーエラーが発生しました"), 500
+
+# 診断用のエンドポイントを追加
+@app.route('/debug/env')
+def debug_env():
+    """環境変数とストレージ設定の診断情報を表示（本番環境では無効化すべき）"""
+    if not DEBUG:
+        return jsonify({"error": "デバッグモードでのみ利用可能です"}), 403
+        
+    # 環境診断情報
+    env_info = {
+        "python_version": sys.version,
+        "environment": {
+            "VERCEL": os.environ.get('VERCEL'),
+            "VERCEL_URL": os.environ.get('VERCEL_URL'),
+            "APP_ENV": APP_ENV,
+            "DEBUG": DEBUG,
+        },
+        "storage_config": {
+            "KV_REST_API_URL": bool(os.environ.get('KV_REST_API_URL')),
+            "KV_REST_API_TOKEN": bool(os.environ.get('KV_REST_API_TOKEN')),
+            "BLOB_READ_WRITE_TOKEN": bool(os.environ.get('BLOB_READ_WRITE_TOKEN')),
+        },
+        "file_paths": {
+            "BASE_DIR": BASE_DIR,
+            "UPLOAD_FOLDER": UPLOAD_FOLDER,
+            "URL_LIST_FILE": URL_LIST_FILE,
+            "upload_folder_exists": os.path.exists(UPLOAD_FOLDER),
+            "url_list_file_exists": os.path.exists(URL_LIST_FILE),
+        },
+        "modules": {}
+    }
+    
+    # インストール済みのモジュール確認
+    try:
+        import pkg_resources
+        for package in ['vercel-kv', 'vercel-blob', 'flask']:
+            try:
+                version = pkg_resources.get_distribution(package).version
+                env_info["modules"][package] = version
+            except pkg_resources.DistributionNotFound:
+                env_info["modules"][package] = "未インストール"
+    except ImportError:
+        env_info["modules"]["note"] = "pkg_resources が利用できないため、モジュール情報を取得できません"
+    
+    # 接続テスト
+    env_info["connection_test"] = {}
+    
+    # KV接続テスト
+    try:
+        if os.environ.get('KV_REST_API_URL') and os.environ.get('KV_REST_API_TOKEN'):
+            test_result = run_async(kv_set('test_key', 'test_value'))
+            env_info["connection_test"]["kv_write"] = bool(test_result)
+            
+            test_result = run_async(kv_get('test_key'))
+            env_info["connection_test"]["kv_read"] = test_result == 'test_value'
+            
+            run_async(kv_delete('test_key'))
+        else:
+            env_info["connection_test"]["kv"] = "設定なし"
+    except Exception as e:
+        env_info["connection_test"]["kv_error"] = str(e)
+    
+    # Blob接続テスト
+    try:
+        if os.environ.get('BLOB_READ_WRITE_TOKEN'):
+            test_content = "Test content for Blob Storage"
+            blob_url = run_async(blob_put('test.txt', test_content))
+            env_info["connection_test"]["blob_write"] = bool(blob_url)
+            
+            if blob_url:
+                content = run_async(blob_get(blob_url))
+                env_info["connection_test"]["blob_read"] = content == test_content
+                
+                deleted = run_async(blob_delete(blob_url))
+                env_info["connection_test"]["blob_delete"] = bool(deleted)
+        else:
+            env_info["connection_test"]["blob"] = "設定なし"
+    except Exception as e:
+        env_info["connection_test"]["blob_error"] = str(e)
+    
+    return jsonify(env_info)
 
 # アプリケーション起動（開発環境のみ）
 if __name__ == '__main__':
