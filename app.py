@@ -11,8 +11,6 @@ from flask_caching import Cache
 from urllib.parse import urlparse
 from urllib.parse import urljoin
 import re
-import asyncio
-import aiohttp
 from dotenv import load_dotenv
 import base64
 import hashlib
@@ -58,7 +56,7 @@ KV_REST_API_TOKEN = os.environ.get('KV_REST_API_TOKEN')
 BLOB_READ_WRITE_TOKEN = os.environ.get('BLOB_READ_WRITE_TOKEN')
 
 # KVヘルパー関数
-async def kv_get(key):
+def kv_get(key):
     """KVストアから値を取得"""
     if not KV_REST_API_URL or not KV_REST_API_TOKEN:
         app.logger.warning("KV接続情報が設定されていません。ファイルベースのストレージにフォールバックします。")
@@ -70,22 +68,21 @@ async def kv_get(key):
             "Authorization": f"Bearer {KV_REST_API_TOKEN}"
         }
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    return result.get('result')
-                elif response.status == 404:
-                    app.logger.info(f"KVキー '{key}' が見つかりません")
-                    return None
-                else:
-                    app.logger.error(f"KV取得エラー: {response.status} - {await response.text()}")
-                    return None
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            result = response.json()
+            return result.get('result')
+        elif response.status_code == 404:
+            app.logger.info(f"KVキー '{key}' が見つかりません")
+            return None
+        else:
+            app.logger.error(f"KV取得エラー: {response.status_code} - {response.text}")
+            return None
     except Exception as e:
         app.logger.error(f"KV取得例外: {str(e)}")
         return None
 
-async def kv_set(key, value, ex=None):
+def kv_set(key, value, ex=None):
     """KVストアに値を設定"""
     if not KV_REST_API_URL or not KV_REST_API_TOKEN:
         app.logger.warning("KV接続情報が設定されていません。ファイルベースのストレージにフォールバックします。")
@@ -104,18 +101,17 @@ async def kv_set(key, value, ex=None):
         if ex:
             data["ex"] = ex
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=data) as response:
-                if response.status == 200:
-                    return True
-                else:
-                    app.logger.error(f"KV設定エラー: {response.status} - {await response.text()}")
-                    return False
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            return True
+        else:
+            app.logger.error(f"KV設定エラー: {response.status_code} - {response.text}")
+            return False
     except Exception as e:
         app.logger.error(f"KV設定例外: {str(e)}")
         return False
 
-async def kv_del(key):
+def kv_del(key):
     """KVストアから値を削除"""
     if not KV_REST_API_URL or not KV_REST_API_TOKEN:
         app.logger.warning("KV接続情報が設定されていません。ファイルベースのストレージにフォールバックします。")
@@ -127,18 +123,17 @@ async def kv_del(key):
             "Authorization": f"Bearer {KV_REST_API_TOKEN}"
         }
         
-        async with aiohttp.ClientSession() as session:
-            async with session.delete(url, headers=headers) as response:
-                if response.status == 200:
-                    return True
-                else:
-                    app.logger.error(f"KV削除エラー: {response.status} - {await response.text()}")
-                    return False
+        response = requests.delete(url, headers=headers)
+        if response.status_code == 200:
+            return True
+        else:
+            app.logger.error(f"KV削除エラー: {response.status_code} - {response.text}")
+            return False
     except Exception as e:
         app.logger.error(f"KV削除例外: {str(e)}")
         return False
 
-async def kv_keys(pattern="*"):
+def kv_keys(pattern="*"):
     """パターンに一致するすべてのキーを取得"""
     if not KV_REST_API_URL or not KV_REST_API_TOKEN:
         app.logger.warning("KV接続情報が設定されていません。ファイルベースのストレージにフォールバックします。")
@@ -150,20 +145,19 @@ async def kv_keys(pattern="*"):
             "Authorization": f"Bearer {KV_REST_API_TOKEN}"
         }
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    return result.get('result', [])
-                else:
-                    app.logger.error(f"KVキー一覧取得エラー: {response.status} - {await response.text()}")
-                    return []
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            result = response.json()
+            return result.get('result', [])
+        else:
+            app.logger.error(f"KVキー一覧取得エラー: {response.status_code} - {response.text}")
+            return []
     except Exception as e:
         app.logger.error(f"KVキー一覧例外: {str(e)}")
         return []
 
 # Blobヘルパー関数
-async def blob_put(file_name, content, options=None):
+def blob_put(file_name, content, options=None):
     """コンテンツをBlobストレージに保存"""
     if not BLOB_READ_WRITE_TOKEN:
         app.logger.warning("Blob接続情報が設定されていません。ファイルベースのストレージにフォールバックします。")
@@ -180,80 +174,63 @@ async def blob_put(file_name, content, options=None):
         if isinstance(content, str):
             content = content.encode('utf-8')
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, data=content) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    return result.get('url')
-                else:
-                    app.logger.error(f"Blob保存エラー: {response.status} - {await response.text()}")
-                    return None
+        response = requests.post(url, headers=headers, data=content)
+        if response.status_code == 200:
+            result = response.json()
+            return result.get('url')
+        else:
+            app.logger.error(f"Blob保存エラー: {response.status_code} - {response.text}")
+            return None
     except Exception as e:
         app.logger.error(f"Blob保存例外: {str(e)}")
         return None
 
-async def blob_get(url):
+def blob_get(url):
     """Blobストレージからコンテンツを取得"""
     if not url or not url.startswith('https://'):
         app.logger.error(f"無効なBlobURL: {url}")
         return None
     
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    return await response.text()
-                else:
-                    app.logger.error(f"Blobコンテンツ取得エラー: {response.status} - {await response.text()}")
-                    return None
+        response = requests.get(url)
+        if response.status_code == 200:
+            return response.text
+        else:
+            app.logger.error(f"Blob取得エラー: {response.status_code} - {response.text}")
+            return None
     except Exception as e:
-        app.logger.error(f"Blobコンテンツ取得例外: {str(e)}")
+        app.logger.error(f"Blob取得例外: {str(e)}")
         return None
 
-async def blob_delete(url):
+def blob_delete(url):
     """Blobストレージからコンテンツを削除"""
-    if not BLOB_READ_WRITE_TOKEN:
-        app.logger.warning("Blob接続情報が設定されていません。ファイルベースのストレージにフォールバックします。")
-        return False
-    
-    if not url or not url.startswith('https://'):
+    if not BLOB_READ_WRITE_TOKEN or not url or not url.startswith('https://'):
         app.logger.error(f"無効なBlobURL: {url}")
         return False
     
     try:
-        # URLからパスパートを抽出
-        url_parts = urlparse(url)
-        path = url_parts.path
+        # URLからパス部分を抽出
+        path = url.split('/')[-1]
+        delete_url = f"https://blob.vercel-storage.com/delete/store/{path}"
         
-        delete_url = "https://blob.vercel-storage.com/delete"
         headers = {
-            "Authorization": f"Bearer {BLOB_READ_WRITE_TOKEN}",
-            "X-Blob-Store": "store",
-            "X-Blob-Path": path
+            "Authorization": f"Bearer {BLOB_READ_WRITE_TOKEN}"
         }
         
-        async with aiohttp.ClientSession() as session:
-            async with session.delete(delete_url, headers=headers) as response:
-                if response.status == 200:
-                    return True
-                else:
-                    app.logger.error(f"Blob削除エラー: {response.status} - {await response.text()}")
-                    return False
+        response = requests.delete(delete_url, headers=headers)
+        if response.status_code == 200:
+            return True
+        else:
+            app.logger.error(f"Blob削除エラー: {response.status_code} - {response.text}")
+            return False
     except Exception as e:
         app.logger.error(f"Blob削除例外: {str(e)}")
         return False
 
-# 同期ラッパー関数
-def run_async(coroutine):
-    """非同期関数を同期的に実行するヘルパー"""
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        # イベントループがない場合は新しく作成
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    return loop.run_until_complete(coroutine)
+# 非同期関数をシンクロに変換するヘルパー関数
+def run_async(func):
+    """非同期関数実行ヘルパー（必要なくなったので直接結果を返す）"""
+    return func
 
 # URLリスト管理の新しい実装
 def get_url_list():
