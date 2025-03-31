@@ -156,6 +156,15 @@ try:
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+        
+        # coroutineがNoneの場合やコルーチンでない場合の処理を追加
+        if coroutine is None:
+            return None
+        
+        if not asyncio.iscoroutine(coroutine):
+            app.logger.warning(f"coroutineではないオブジェクトが渡されました: {type(coroutine)}")
+            return coroutine
+        
         return loop.run_until_complete(coroutine)
         
     app.logger.info("Vercel KV/Blobストレージが利用可能です")
@@ -215,15 +224,22 @@ def get_url_list():
     """保存されたURLリストを取得 (Vercel KV & 後方互換性)"""
     try:
         # まずVercel KVから取得を試みる
-        url_list = run_async(kv_get('url_list'))
-        if url_list:
-            return url_list
+        if kv:
+            try:
+                url_list = run_async(kv_get('url_list'))
+                if url_list:
+                    app.logger.info("KVストレージからURLリストを取得しました")
+                    return url_list
+            except Exception as e:
+                app.logger.error(f"KVストレージからのURLリスト取得エラー: {str(e)}")
         
         # KVに接続できない場合はファイルから読み込む
         try:
             if os.path.exists(URL_LIST_FILE):
                 with open(URL_LIST_FILE, 'r') as f:
-                    return json.load(f)
+                    url_list = json.load(f)
+                    app.logger.info(f"ファイルからURLリストを取得しました: {URL_LIST_FILE}")
+                    return url_list
             else:
                 app.logger.warning(f"URLリストファイルが存在しません: {URL_LIST_FILE}")
                 return []
@@ -238,25 +254,35 @@ def get_url_list():
 def save_url_list(url_list):
     """URLリストを保存 (Vercel KV & 後方互換性)"""
     try:
+        kv_result = False
+        
         # まずVercel KVへの保存を試みる
-        kv_result = run_async(kv_set('url_list', url_list))
+        if kv:
+            try:
+                kv_result = run_async(kv_set('url_list', url_list))
+                if kv_result:
+                    app.logger.info("URLリストをKVストレージに保存しました")
+            except Exception as e:
+                app.logger.error(f"KVストレージへのURLリスト保存エラー: {str(e)}")
         
         # ファイルにも保存（後方互換性）
+        file_saved = False
         try:
             with open(URL_LIST_FILE, 'w') as f:
                 json.dump(url_list, f)
             app.logger.info(f"URLリストをファイルに保存しました: {URL_LIST_FILE}")
+            file_saved = True
         except Exception as e:
             # Vercel環境ではファイル書き込みエラーは許容
             if os.environ.get('VERCEL') == '1':
                 app.logger.warning(f"Vercel環境でのURLリストファイル保存をスキップ: {str(e)}")
                 # KVに保存できていれば成功とみなす
-                return kv_result is not None
+                return kv_result
             else:
                 app.logger.error(f"URLリストファイル保存エラー: {str(e)}")
-                return False
+                file_saved = False
             
-        return True
+        return kv_result or file_saved
     except Exception as e:
         app.logger.error(f"URLリスト保存エラー: {str(e)}")
         return False
