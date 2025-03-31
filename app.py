@@ -77,8 +77,8 @@ if not os.path.exists(URL_LIST_FILE):
         # /tmpディレクトリが存在することを確認
         os.makedirs(os.path.dirname(URL_LIST_FILE), exist_ok=True)
         # 空のURLリストファイルを作成
-        with open(URL_LIST_FILE, 'w') as f:
-            json.dump([], f)
+    with open(URL_LIST_FILE, 'w') as f:
+        json.dump([], f)
         app.logger.info(f"新しいURLリストファイルを作成しました: {URL_LIST_FILE}")
     except Exception as e:
         app.logger.error(f"URLリストファイルの初期化に失敗: {str(e)}")
@@ -297,8 +297,8 @@ def get_url_list():
                     # /tmpディレクトリが存在することを確認
                     os.makedirs(os.path.dirname(URL_LIST_FILE), exist_ok=True)
                     # 空のURLリストファイルを作成
-                    with open(URL_LIST_FILE, 'w') as f:
-                        json.dump([], f)
+            with open(URL_LIST_FILE, 'w') as f:
+                json.dump([], f)
                     app.logger.info(f"新しいURLリストファイルを作成しました: {URL_LIST_FILE}")
                 except Exception as e:
                     app.logger.warning(f"新しいURLリストファイル作成に失敗: {str(e)}")
@@ -335,8 +335,8 @@ def save_url_list(url_list):
                 # tmpディレクトリに保存を試みる
                 try:
                     os.makedirs(os.path.dirname(URL_LIST_FILE), exist_ok=True)
-                    with open(URL_LIST_FILE, 'w') as f:
-                        json.dump(url_list, f)
+        with open(URL_LIST_FILE, 'w') as f:
+            json.dump(url_list, f)
                     app.logger.info(f"URLリストをtmpディレクトリに保存しました: {URL_LIST_FILE}")
                     file_saved = True
                 except Exception as tmp_err:
@@ -504,7 +504,6 @@ def create():
         file_name = f"{file_id}.html"
         
         # Vercel Blobにコンテンツを保存
-        blob_url = None
         try:
             app.logger.info(f"Blobストレージの保存を開始: ファイル名={file_name}, サイズ={len(new_html)} バイト")
             blob_token = os.environ.get('BLOB_READ_WRITE_TOKEN')
@@ -532,7 +531,7 @@ def create():
             blob_url = None
         
         if not blob_url:
-            # Vercel環境ではBlobストレージは必須だが、ローカル開発用に条件分岐
+            # Vercel環境ではBlobストレージは必須
             if os.environ.get('VERCEL') == '1':
                 # Vercel環境でのエラー詳細
                 env_details = ""
@@ -555,16 +554,9 @@ def create():
                 flash(f'サーバー設定エラー: Blobストレージが利用できません。{env_details} Vercelダッシュボードの「Settings」→「Environment Variables」で環境変数を確認してください。', 'error')
                 return redirect(url_for('index'))
             
-            # ローカル環境の場合はファイルに保存
-            file_path = os.path.join(UPLOAD_FOLDER, file_name)
-            try:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(new_html)
-                app.logger.warning("Blobストレージが使用できないため、ファイルに保存しました")
-            except Exception as e:
-                app.logger.error(f"ファイル保存エラー: {str(e)}")
-                flash(f'ファイル保存エラー: {str(e)}', 'error')
-                return redirect(url_for('index'))
+            # 開発環境でのエラー表示
+            flash('現在、ファイル保存機能が利用できません。環境設定を確認してください。', 'error')
+            return redirect(url_for('index'))
         
         # URLリストに追加
         url_list = get_url_list()
@@ -656,45 +648,10 @@ def view(file_id):
             except Exception as e:
                 app.logger.error(f"Blobからのコンテンツ取得に失敗: {str(e)}")
         
-        # 2. Blobが存在しない、または取得に失敗した場合はファイルから読み込み
+        # Blobからコンテンツを取得できなかった場合はエラーを表示
         if not html_content:
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id + '.html')
-            app.logger.info(f"ファイルからコンテンツを取得: {file_path}")
-            
-            if not os.path.exists(file_path):
-                app.logger.error(f"HTML file not found: {file_path}")
-                return render_template('error.html', error="ファイルが見つかりません"), 404
-            
-            # ファイルからHTMLコンテンツを読み込み
-            try:
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        html_content = f.read()
-                except UnicodeDecodeError:
-                    # UTF-8で読めない場合はバイナリモードで読み込み
-                    with open(file_path, 'rb') as f:
-                        raw_content = f.read()
-                    
-                    # エンコーディングを推測
-                    encodings = ['utf-8', 'shift_jis', 'euc-jp', 'cp932', 'iso-2022-jp']
-                    for encoding in encodings:
-                        try:
-                            html_content = raw_content.decode(encoding)
-                            app.logger.info(f"エンコーディング検出: {encoding}")
-                            break
-                        except UnicodeDecodeError:
-                            continue
-                    
-                    # どのエンコーディングでも読み込めなかった場合
-                    if not html_content:
-                        html_content = raw_content.decode('utf-8', errors='replace')
-                        app.logger.warning(f"不明なエンコーディング、置換モードで読み込み")
-            except Exception as e:
-                app.logger.error(f"ファイル読み込みエラー: {str(e)}")
-                return render_template('error.html', error=f"コンテンツの読み込みに失敗しました: {str(e)}"), 500
-        
-        if not html_content:
-            return render_template('error.html', error="コンテンツの読み込みに失敗しました"), 500
+            app.logger.error(f"コンテンツ取得失敗: file_id={file_id}")
+            return render_template('error.html', error="コンテンツの読み込みに失敗しました。サーバー管理者にお問い合わせください。"), 500
         
         # クリック数を更新
         try:
@@ -703,7 +660,7 @@ def view(file_id):
             app.logger.error(f"クリック数更新エラー: {str(e)}")
             # 更新失敗は無視する
         
-        # レスポンスを返す
+        # HTMLコンテンツを直接応答
         response = make_response(html_content)
         response.headers['Content-Type'] = 'text/html; charset=utf-8'
         return response
@@ -741,18 +698,6 @@ def delete(file_id):
                 except Exception as e:
                     app.logger.error(f"Blobストレージからの削除に失敗: {str(e)}")
             
-            # ファイルも削除（後方互換性のため）
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id + '.html')
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                    app.logger.info(f"ファイルシステムからファイルを削除: {file_path}")
-                except Exception as e:
-                    app.logger.error(f"ファイルシステムからの削除に失敗: {str(e)}")
-                    # Vercel環境での削除エラーは無視
-                    if os.environ.get('VERCEL') != '1':
-                        flash(f'ファイル削除エラー: {str(e)}', 'warning')
-            
             # URLリストを保存
             if save_url_list(url_list):
                 flash('URLが正常に削除されました', 'success')
@@ -760,7 +705,7 @@ def delete(file_id):
                 flash('URLリストの保存中にエラーが発生しました', 'error')
         else:
             flash('指定されたURLが見つかりません', 'error')
-            
+        
         return redirect(url_for('index'))
         
     except Exception as e:
