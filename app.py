@@ -21,17 +21,36 @@ PORT = int(os.environ.get('PORT', 8080))
 # アプリケーションディレクトリ
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Vercel環境ではファイルシステムが読み取り専用なのでtmpディレクトリを使用
-if os.environ.get('VERCEL') == '1':
+# Vercel環境の検出を改善 (VERCEL=1またはVERCEL_ENV=production)
+IS_VERCEL = os.environ.get('VERCEL') == '1' or os.environ.get('VERCEL_ENV') in ['production', 'preview', 'development']
+if IS_VERCEL:
     UPLOAD_FOLDER = '/tmp/urls'
+    URL_LIST_FILE = '/tmp/url_list.json'
+    CONFIG_FILE = '/tmp/config.json'
+    app.logger.info(f"Vercel環境を検出しました。一時ディレクトリを使用: {UPLOAD_FOLDER}")
 else:
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'urls')
+    URL_LIST_FILE = os.path.join(BASE_DIR, 'url_list.json')
+    CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
+    app.logger.info(f"ローカル環境です。基本ディレクトリを使用: {UPLOAD_FOLDER}")
+
+# 静的ファイルとテンプレートのディレクトリ設定
 STATIC_FOLDER = os.path.join(BASE_DIR, 'static')
 TEMPLATE_FOLDER = os.path.join(BASE_DIR, 'templates')
-CONFIG_FILE = os.path.join(BASE_DIR, 'config.json') if not os.environ.get('VERCEL') == '1' else '/tmp/config.json'
-URL_LIST_FILE = os.path.join(BASE_DIR, 'url_list.json') if not os.environ.get('VERCEL') == '1' else '/tmp/url_list.json'
 
 # URLsディレクトリを作成（存在しない場合）
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# URLリストファイルが存在しない場合に初期化ファイルを作成
+if not os.path.exists(URL_LIST_FILE):
+    try:
+        # /tmpディレクトリが存在することを確認
+        os.makedirs(os.path.dirname(URL_LIST_FILE), exist_ok=True)
+        # 空のURLリストファイルを作成
+        with open(URL_LIST_FILE, 'w') as f:
+            json.dump([], f)
+        app.logger.info(f"新しいURLリストファイルを作成しました: {URL_LIST_FILE}")
+    except Exception as e:
+        app.logger.error(f"URLリストファイルの初期化に失敗: {str(e)}")
 
 # アプリケーション初期化
 app = Flask(__name__, static_folder=STATIC_FOLDER, template_folder=TEMPLATE_FOLDER)
@@ -248,21 +267,31 @@ def get_url_list():
         # ローカル環境ではURLリストファイルから読み込む
         try:
             if os.path.exists(URL_LIST_FILE):
-                with open(URL_LIST_FILE, 'r') as f:
-                    url_list = json.load(f)
-                    app.logger.info(f"ファイルからURLリストを取得しました: {URL_LIST_FILE}")
-                    return url_list
+                try:
+                    with open(URL_LIST_FILE, 'r') as f:
+                        url_list = json.load(f)
+                        app.logger.info(f"ファイルからURLリストを取得しました: {URL_LIST_FILE}")
+                        return url_list
+                except json.JSONDecodeError as json_err:
+                    app.logger.error(f"URLリストJSONデコードエラー: {str(json_err)}")
+                    # 破損したJSONファイルを再作成
+                    with open(URL_LIST_FILE, 'w') as f:
+                        json.dump([], f)
+                    app.logger.info(f"破損したURLリストファイルを再作成しました: {URL_LIST_FILE}")
+                    return []
             else:
                 # ファイルが存在しない場合は新しい空のリストを返す
                 app.logger.warning(f"URLリストファイルが存在しません: {URL_LIST_FILE}")
-                # Vercel環境では初回実行時にファイルを作成
-                if os.environ.get('VERCEL') == '1':
-                    try:
-                        with open(URL_LIST_FILE, 'w') as f:
-                            json.dump([], f)
-                        app.logger.info(f"新しいURLリストファイルを作成しました: {URL_LIST_FILE}")
-                    except Exception as e:
-                        app.logger.warning(f"新しいURLリストファイル作成に失敗: {str(e)}")
+                # URLリストファイルを作成
+                try:
+                    # /tmpディレクトリが存在することを確認
+                    os.makedirs(os.path.dirname(URL_LIST_FILE), exist_ok=True)
+                    # 空のURLリストファイルを作成
+                    with open(URL_LIST_FILE, 'w') as f:
+                        json.dump([], f)
+                    app.logger.info(f"新しいURLリストファイルを作成しました: {URL_LIST_FILE}")
+                except Exception as e:
+                    app.logger.warning(f"新しいURLリストファイル作成に失敗: {str(e)}")
                 return []
         except Exception as e:
             app.logger.error(f"URLリストファイル読み込みエラー: {str(e)}")
