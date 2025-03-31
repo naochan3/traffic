@@ -11,6 +11,14 @@ import re
 import sys
 import asyncio
 
+# Vercel Blobモジュールを先にインポート
+try:
+    import vercel_blob
+    from vercel_blob import put, get, list, del_
+except ImportError as e:
+    # インポートエラーをログ出力せずに変数に保存
+    vercel_blob_import_error = str(e)
+
 from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, make_response, session, abort
 
 # 環境変数を確認
@@ -81,13 +89,14 @@ try:
     app.logger.info(f"Pythonバージョン: {sys.version}")
     app.logger.info(f"sys.path: {sys.path}")
     
-    try:
-        import vercel_blob
-        app.logger.info(f"vercel_blob バージョン: {vercel_blob.__version__ if hasattr(vercel_blob, '__version__') else '不明'}")
-    except ImportError as e:
-        app.logger.error(f"vercel_blob インポートエラー: {str(e)}")
+    # 事前にインポートされているかチェック
+    if 'vercel_blob' not in sys.modules:
+        app.logger.error("vercel_blob モジュールがインポートされていません")
+        if 'vercel_blob_import_error' in globals():
+            app.logger.error(f"vercel_blob インポートエラー: {vercel_blob_import_error}")
+        raise ImportError("vercel_blob モジュールが見つかりません")
     
-    from vercel_blob import put, get, list, del_
+    app.logger.info(f"vercel_blob バージョン: {vercel_blob.__version__ if hasattr(vercel_blob, '__version__') else '不明'}")
     
     # 環境変数の確認
     app.logger.info(f"VERCEL環境変数: {os.environ.get('VERCEL')}")
