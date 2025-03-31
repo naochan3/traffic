@@ -20,43 +20,13 @@ PORT = int(os.environ.get('PORT', 8080))
 
 # アプリケーションディレクトリ
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Vercel環境ではファイルシステムが読み取り専用なのでtmpディレクトリを使用
-# Vercel環境の検出を改善 (VERCEL=1またはVERCEL_ENV=production)
-IS_VERCEL = os.environ.get('VERCEL') == '1' or os.environ.get('VERCEL_ENV') in ['production', 'preview', 'development']
-if IS_VERCEL:
-    UPLOAD_FOLDER = '/tmp/urls'
-    URL_LIST_FILE = '/tmp/url_list.json'
-    CONFIG_FILE = '/tmp/config.json'
-    app.logger.info(f"Vercel環境を検出しました。一時ディレクトリを使用: {UPLOAD_FOLDER}")
-else:
-    UPLOAD_FOLDER = os.path.join(BASE_DIR, 'urls')
-    URL_LIST_FILE = os.path.join(BASE_DIR, 'url_list.json')
-    CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
-    app.logger.info(f"ローカル環境です。基本ディレクトリを使用: {UPLOAD_FOLDER}")
-
-# 静的ファイルとテンプレートのディレクトリ設定
-STATIC_FOLDER = os.path.join(BASE_DIR, 'static')
-TEMPLATE_FOLDER = os.path.join(BASE_DIR, 'templates')
-
-# URLsディレクトリを作成（存在しない場合）
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-# URLリストファイルが存在しない場合に初期化ファイルを作成
-if not os.path.exists(URL_LIST_FILE):
-    try:
-        # /tmpディレクトリが存在することを確認
-        os.makedirs(os.path.dirname(URL_LIST_FILE), exist_ok=True)
-        # 空のURLリストファイルを作成
-        with open(URL_LIST_FILE, 'w') as f:
-            json.dump([], f)
-        app.logger.info(f"新しいURLリストファイルを作成しました: {URL_LIST_FILE}")
-    except Exception as e:
-        app.logger.error(f"URLリストファイルの初期化に失敗: {str(e)}")
 
 # アプリケーション初期化
-app = Flask(__name__, static_folder=STATIC_FOLDER, template_folder=TEMPLATE_FOLDER)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB制限
+app = Flask(__name__, 
+            static_folder=os.path.join(BASE_DIR, 'static'),
+            template_folder=os.path.join(BASE_DIR, 'templates'))
 app.secret_key = os.environ.get('SECRET_KEY', 'dev_secret_key')
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB制限
 
 # ログ設定
 logging.basicConfig(level=logging.INFO)
@@ -73,6 +43,37 @@ if not DEBUG:
     file_handler = logging.FileHandler('logs/app.log')
     file_handler.setLevel(logging.INFO)
     app.logger.addHandler(file_handler)
+
+# Vercel環境の検出を改善 (VERCEL=1またはVERCEL_ENV=production)
+IS_VERCEL = os.environ.get('VERCEL') == '1' or os.environ.get('VERCEL_ENV') in ['production', 'preview', 'development']
+if IS_VERCEL:
+    UPLOAD_FOLDER = '/tmp/urls'
+    URL_LIST_FILE = '/tmp/url_list.json'
+    CONFIG_FILE = '/tmp/config.json'
+    app.logger.info(f"Vercel環境を検出しました。一時ディレクトリを使用: {UPLOAD_FOLDER}")
+else:
+    UPLOAD_FOLDER = os.path.join(BASE_DIR, 'urls')
+    URL_LIST_FILE = os.path.join(BASE_DIR, 'url_list.json')
+    CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
+    app.logger.info(f"ローカル環境です。基本ディレクトリを使用: {UPLOAD_FOLDER}")
+
+# 設定をアプリケーションに適用
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+# URLsディレクトリを作成（存在しない場合）
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# URLリストファイルが存在しない場合に初期化ファイルを作成
+if not os.path.exists(URL_LIST_FILE):
+    try:
+        # /tmpディレクトリが存在することを確認
+        os.makedirs(os.path.dirname(URL_LIST_FILE), exist_ok=True)
+        # 空のURLリストファイルを作成
+        with open(URL_LIST_FILE, 'w') as f:
+            json.dump([], f)
+        app.logger.info(f"新しいURLリストファイルを作成しました: {URL_LIST_FILE}")
+    except Exception as e:
+        app.logger.error(f"URLリストファイルの初期化に失敗: {str(e)}")
 
 # Vercel Blob/KVストレージのサポート
 try:
