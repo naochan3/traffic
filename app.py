@@ -9,6 +9,7 @@ from functools import wraps
 from urllib.parse import urlparse
 import re
 import sys
+import asyncio
 
 from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, make_response, session, abort
 
@@ -150,7 +151,6 @@ try:
         
     # 非同期関数を実行するヘルパー
     def run_async(coroutine):
-        import asyncio
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
@@ -441,10 +441,19 @@ def create():
         file_name = f"{file_id}.html"
         
         # Vercel Blobにコンテンツを保存
+        blob_url = None
         try:
             app.logger.info(f"Blobストレージの保存を開始: ファイル名={file_name}, サイズ={len(new_html)} バイト")
-            blob_url = run_async(blob_put(file_name, new_html))
-            app.logger.info(f"Blob保存結果: {blob_url if blob_url else 'None'}")
+            if os.environ.get('BLOB_READ_WRITE_TOKEN'):
+                # run_asyncでブロブへの保存を実行
+                coroutine = blob_put(file_name, new_html)
+                if asyncio.iscoroutine(coroutine):
+                    blob_url = run_async(coroutine)
+                    app.logger.info(f"Blob保存結果: {blob_url if blob_url else 'None'}")
+                else:
+                    app.logger.error("blob_putがコルーチンを返しませんでした")
+            else:
+                app.logger.error("BLOB_READ_WRITE_TOKENが設定されていません")
         except Exception as e:
             app.logger.error(f"Blob保存処理中の例外: {str(e)}", exc_info=True)
             blob_url = None
@@ -558,7 +567,14 @@ def view(file_id):
         if target_url.get('blob_url'):
             app.logger.info(f"Blobストレージからコンテンツを取得: {target_url['blob_url']}")
             try:
-                html_content = run_async(blob_get(target_url['blob_url']))
+                if os.environ.get('BLOB_READ_WRITE_TOKEN'):
+                    coroutine = blob_get(target_url['blob_url'])
+                    if asyncio.iscoroutine(coroutine):
+                        html_content = run_async(coroutine)
+                    else:
+                        app.logger.error("blob_getがコルーチンを返しませんでした")
+                else:
+                    app.logger.error("BLOB_READ_WRITE_TOKENが設定されていません")
             except Exception as e:
                 app.logger.error(f"Blobからのコンテンツ取得に失敗: {str(e)}")
         
@@ -638,8 +654,15 @@ def delete(file_id):
             # Blobストレージから削除
             if target_url.get('blob_url'):
                 try:
-                    blob_deleted = run_async(blob_delete(target_url['blob_url']))
-                    app.logger.info(f"Blobストレージからファイルを削除: {target_url['blob_url']}, 結果: {blob_deleted}")
+                    if os.environ.get('BLOB_READ_WRITE_TOKEN'):
+                        coroutine = blob_delete(target_url['blob_url'])
+                        if asyncio.iscoroutine(coroutine):
+                            blob_deleted = run_async(coroutine)
+                            app.logger.info(f"Blobストレージからファイルを削除: {target_url['blob_url']}, 結果: {blob_deleted}")
+                        else:
+                            app.logger.error("blob_deleteがコルーチンを返しませんでした")
+                    else:
+                        app.logger.error("BLOB_READ_WRITE_TOKENが設定されていません")
                 except Exception as e:
                     app.logger.error(f"Blobストレージからの削除に失敗: {str(e)}")
             
@@ -791,15 +814,23 @@ def debug_env():
     try:
         if os.environ.get('BLOB_READ_WRITE_TOKEN'):
             test_content = "Test content for Blob Storage"
-            blob_url = run_async(blob_put('test.txt', test_content))
-            env_info["connection_test"]["blob_write"] = bool(blob_url)
-            
-            if blob_url:
-                content = run_async(blob_get(blob_url))
-                env_info["connection_test"]["blob_read"] = content == test_content
+            coroutine = blob_put('test.txt', test_content)
+            if asyncio.iscoroutine(coroutine):
+                blob_url = run_async(coroutine)
+                env_info["connection_test"]["blob_write"] = bool(blob_url)
                 
-                deleted = run_async(blob_delete(blob_url))
-                env_info["connection_test"]["blob_delete"] = bool(deleted)
+                if blob_url:
+                    coroutine = blob_get(blob_url)
+                    if asyncio.iscoroutine(coroutine):
+                        content = run_async(coroutine)
+                        env_info["connection_test"]["blob_read"] = content == test_content
+                    
+                    coroutine = blob_delete(blob_url)
+                    if asyncio.iscoroutine(coroutine):
+                        deleted = run_async(coroutine)
+                        env_info["connection_test"]["blob_delete"] = bool(deleted)
+            else:
+                env_info["connection_test"]["blob_error"] = "blob_putがコルーチンを返しませんでした"
         else:
             env_info["connection_test"]["blob"] = "設定なし"
     except Exception as e:
