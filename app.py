@@ -386,7 +386,7 @@ def fetch_html_content(url):
 def create():
     try:
         # フォームデータを取得
-        url = request.form.get('url')
+        url = request.form.get('original_url')  # HTMLフォームのname属性と一致させる
         pixel_code = request.form.get('pixel_code', '')  # ユーザー入力のピクセルコード（任意）
         
         app.logger.info(f"URL作成リクエスト: {url}")
