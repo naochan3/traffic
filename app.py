@@ -14,6 +14,7 @@ import re
 from dotenv import load_dotenv
 import base64
 import hashlib
+import urllib.parse
 
 # 環境変数をロード
 load_dotenv()
@@ -382,29 +383,23 @@ def fetch_html_content(url):
     
     return html_content
 
-@app.route('/admin/create', methods=['POST'])
+@app.route('/create', methods=['POST'])
 def create():
     try:
-        # フォームデータを取得
-        url = request.form.get('original_url')  # HTMLフォームのname属性と一致させる
-        pixel_code = request.form.get('pixel_code', '')  # ユーザー入力のピクセルコード（任意）
-        
-        app.logger.info(f"URL作成リクエスト: {url}")
+        app.logger.info("URL作成リクエスト受信")
+        url = request.form.get('url')
+        pixel_code = request.form.get('pixel_code', '')
+        app.logger.info(f"ピクセルコード受信: {pixel_code[:100]}..." if pixel_code else "ピクセルコードなし")
         
         if not url:
-            flash('URLを入力してください。', 'error')
-            return redirect(url_for('index'))
-            
-        # URLの形式を検証
-        if not url.startswith(('http://', 'https://')):
-            url = f"https://{url}"
-            
-        # ドメインを取得
-        parsed_url = urlparse(url)
-        base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            return jsonify({'error': 'URLが必要です'}), 400
         
-        # YouTube URLの特別処理
-        is_youtube = 'youtube.com' in parsed_url.netloc or 'youtu.be' in parsed_url.netloc
+        # URL検証
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        # ピクセルスクリプト生成
+        pixel_script = generate_tiktok_pixel_script(pixel_code)
         
         # 設定情報を取得
         config = get_config()
@@ -454,24 +449,20 @@ def create():
         
         # ベースURLの取得
         base_url = url
+        parsed_url = urlparse(url)
         
-        # TikTokピクセルコードの生成
+        # TikTokピクセルコードの処理
         # デフォルトのピクセルIDを使用（または設定からカスタムIDを取得）
         tiktok_pixel_id = config.get('pixel_id', 'CM0EQKBC77U7DDDCEF4G')
         
         # ユーザーがカスタムコードを入力した場合はそれを優先
         if pixel_code and len(pixel_code.strip()) > 0:
             # XSS対策：スクリプトタグだけを抽出して許可
+            app.logger.info(f"ピクセルコード処理中: {pixel_code[:100]}...")
             if '<script' in pixel_code and '</script>' in pixel_code:
-                script_pattern = re.compile(r'<script[^>]*>(.*?)</script>', re.DOTALL)
-                script_matches = script_pattern.findall(pixel_code)
-                if script_matches:
-                    script_content = script_matches[0]
-                    # スクリプト内容はエスケープせずにそのまま使用
-                    pixel_script = f"<script>\n{script_content}\n</script>"
-                else:
-                    # スクリプトタグはあるが内容がない場合
-                    pixel_script = generate_tiktok_pixel_script(tiktok_pixel_id)
+                # このまま使用
+                pixel_script = pixel_code
+                app.logger.info("元のスクリプトタグをそのまま使用")
             else:
                 # スクリプトタグがない場合はIDとして扱う
                 cleaned_id = re.sub(r'[^A-Z0-9]', '', pixel_code.upper())
@@ -481,6 +472,8 @@ def create():
         else:
             # デフォルトピクセルスクリプトを生成
             pixel_script = generate_tiktok_pixel_script(tiktok_pixel_id)
+        
+        app.logger.info(f"最終的なピクセルスクリプト: {pixel_script[:100]}...")
         
         # CSSリセットとメタデータタグ
         css_reset = """
@@ -545,107 +538,59 @@ table {
 <meta name="twitter:card" content="summary_large_image">
 """
         
-        # HTML加工処理を改善
-        # YouTube：iframeを直接埋め込む
-        if is_youtube:
-            video_id = None
-            if 'youtube.com/watch' in url:
-                query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-                video_id = query.get('v', [None])[0]
-            elif 'youtu.be' in url:
-                video_id = urllib.parse.urlparse(url).path.lstrip('/')
+        # HTMLを通常のウェブページとして処理
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
             
-            if video_id:
-                new_html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YouTube Video</title>
-    {pixel_script}
-    <style>
-        body {{ margin: 0; padding: 0; overflow: hidden; }}
-        .video-container {{ position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; }}
-        .video-container iframe {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; }}
-    </style>
-</head>
-<body>
-    <div class="video-container">
-        <iframe width="100%" height="100%" src="https://www.youtube.com/embed/{video_id}" 
-                frameborder="0" allowfullscreen></iframe>
-    </div>
-</body>
-</html>"""
-            else:
-                # ビデオIDが見つからない場合
-                new_html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YouTube Video</title>
-    {pixel_script}
-</head>
-<body>
-    <h1>YouTube URL</h1>
-    <p><a href="{url}" target="_blank">元のYouTube動画を開く</a></p>
-</body>
-</html>"""
-        else:
-            # 通常のウェブページの場合
-            # BeautifulSoupを使用して安全にHTMLを解析
-            try:
-                soup = BeautifulSoup(html_content, 'html.parser')
-                
-                # 元のheadタグのコンテンツを保持
-                head_content = ''
-                if soup.head:
-                    for tag in soup.head.children:
-                        if tag.name != 'meta' and tag.name != 'title':
-                            head_content += str(tag)
-                
-                # HTML内の相対URLを絶対URLに変換
-                for tag in soup.find_all(['img', 'script', 'link', 'a']):
-                    if tag.name == 'img' and tag.get('src'):
-                        if not tag['src'].startswith(('http://', 'https://', 'data:', '//')):
-                            tag['src'] = urljoin(base_url, tag['src'])
-                    elif tag.name == 'script' and tag.get('src'):
-                        if not tag['src'].startswith(('http://', 'https://', 'data:', '//')):
-                            tag['src'] = urljoin(base_url, tag['src'])
-                    elif tag.name == 'link' and tag.get('href'):
-                        if not tag['href'].startswith(('http://', 'https://', 'data:', '//')):
-                            tag['href'] = urljoin(base_url, tag['href'])
-                    elif tag.name == 'a' and tag.get('href'):
-                        if not tag['href'].startswith(('http://', 'https://', 'data:', '//', '#', 'javascript:', 'mailto:')):
-                            tag['href'] = urljoin(base_url, tag['href'])
-                
-                # CSSのurl()を修正
-                for style_tag in soup.find_all('style'):
-                    if style_tag.string:
-                        style_content = style_tag.string
-                        # url(...) パターンを検索して絶対パスに変換
-                        style_tag.string = re.sub(
-                            r'url\([\'"]?([^\'" \)]+)[\'"]?\)',
-                            lambda m: f'url({urljoin(base_url, m.group(1))})' if not re.match(r'^(https?:|data:|\/\/)', m.group(1)) else m.group(0),
-                            style_content
-                        )
-                
-                # インラインスタイルのurl()も修正
-                for tag in soup.find_all(attrs={"style": True}):
-                    style_content = tag['style']
-                    tag['style'] = re.sub(
+            # 元のheadタグのコンテンツを保持
+            head_content = ''
+            if soup.head:
+                for tag in soup.head.children:
+                    if tag.name != 'meta' and tag.name != 'title':
+                        head_content += str(tag)
+            
+            # HTML内の相対URLを絶対URLに変換
+            for tag in soup.find_all(['img', 'script', 'link', 'a']):
+                if tag.name == 'img' and tag.get('src'):
+                    if not tag['src'].startswith(('http://', 'https://', 'data:', '//')):
+                        tag['src'] = urljoin(base_url, tag['src'])
+                elif tag.name == 'script' and tag.get('src'):
+                    if not tag['src'].startswith(('http://', 'https://', 'data:', '//')):
+                        tag['src'] = urljoin(base_url, tag['src'])
+                elif tag.name == 'link' and tag.get('href'):
+                    if not tag['href'].startswith(('http://', 'https://', 'data:', '//')):
+                        tag['href'] = urljoin(base_url, tag['href'])
+                elif tag.name == 'a' and tag.get('href'):
+                    if not tag['href'].startswith(('http://', 'https://', 'data:', '//', '#', 'javascript:', 'mailto:')):
+                        tag['href'] = urljoin(base_url, tag['href'])
+            
+            # CSSのurl()を修正
+            for style_tag in soup.find_all('style'):
+                if style_tag.string:
+                    style_content = style_tag.string
+                    # url(...) パターンを検索して絶対パスに変換
+                    style_tag.string = re.sub(
                         r'url\([\'"]?([^\'" \)]+)[\'"]?\)',
                         lambda m: f'url({urljoin(base_url, m.group(1))})' if not re.match(r'^(https?:|data:|\/\/)', m.group(1)) else m.group(0),
                         style_content
                     )
-                
-                # HTML文書を再構築
-                body_content = str(soup.body) if soup.body else ''
-                if not body_content:
-                    body_content = f"<body>{html_content}</body>"
-                
-                # 新しいHTMLを構築
-                new_html = f"""<!DOCTYPE html>
+            
+            # インラインスタイルのurl()も修正
+            for tag in soup.find_all(attrs={"style": True}):
+                style_content = tag['style']
+                tag['style'] = re.sub(
+                    r'url\([\'"]?([^\'" \)]+)[\'"]?\)',
+                    lambda m: f'url({urljoin(base_url, m.group(1))})' if not re.match(r'^(https?:|data:|\/\/)', m.group(1)) else m.group(0),
+                    style_content
+                )
+            
+            # HTML文書を再構築
+            body_content = str(soup.body) if soup.body else ''
+            if not body_content:
+                body_content = f"<body>{html_content}</body>"
+            
+            # 新しいHTMLを構築
+            new_html = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
@@ -657,12 +602,15 @@ table {
     {head_content}
 </head>
 {body_content}
+<!-- ピクセルコードの確実な読み込みのためにbodyの最後にも配置 -->
+{pixel_script}
 </html>"""
-                
-            except Exception as e:
-                app.logger.error(f"HTML解析エラー: {str(e)}")
-                # 解析に失敗した場合は、単純に挿入
-                new_html = f"""<!DOCTYPE html>
+            app.logger.info(f"ページテンプレート生成完了、head部分: {new_html[:500]}...")
+            
+        except Exception as e:
+            app.logger.error(f"HTML解析エラー: {str(e)}")
+            # 解析に失敗した場合は、単純に挿入
+            new_html = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
@@ -674,6 +622,8 @@ table {
 </head>
 <body>
     {html_content}
+    <!-- ピクセルコードの確実な読み込みのためにbodyの最後にも配置 -->
+    {pixel_script}
 </body>
 </html>"""
         
@@ -731,8 +681,7 @@ table {
             'pixel_id': tiktok_pixel_id,
             'custom_code': pixel_code and len(pixel_code.strip()) > 0,
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'blob_url': blob_url,  # Blobストレージのリンク
-            'youtube': is_youtube
+            'blob_url': blob_url  # Blobストレージのリンク
         }
         
         url_list.append(url_entry)
@@ -750,42 +699,65 @@ table {
         return redirect(url_for('index'))
 
 # TikTokピクセルスクリプト生成関数
-def generate_tiktok_pixel_script(pixel_id):
-    """標準的なTikTokピクセル初期化スクリプトを生成"""
-    if not pixel_id:
-        pixel_id = 'CM0EQKBC77U7DDDCEF4G'  # デフォルトID
+def generate_tiktok_pixel_script(pixel_code=None):
+    """TikTokピクセルスクリプトを生成する
     
-    # スクリプトを直接出力するよう修正（文字列エスケープなし）
-    return f"""
+    pixel_codeが提供された場合:
+    1. スクリプトタグを含む場合は直接そのまま使用（XSS対策のため簡易チェック実施）
+    2. 含まない場合はピクセルIDとして扱い、標準的なTikTokピクセルスクリプトを生成
+    """
+    app.logger.info(f"ピクセルコード処理開始: {pixel_code[:100] if pixel_code else 'None'}...")
+    
+    if not pixel_code:
+        # デフォルトピクセルID
+        pixel_id = 'CM0EQKBC77U7DDDCEF4G'
+        script = f'''
 <script>
 !function (w, d, t) {{
-    w.TiktokAnalyticsObject=t;
-    var ttq=w[t]=w[t]||[];
-    ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"];
-    ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};
-    for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);
-    ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}};
-    ttq.load=function(e,n){{
-        var i="https://analytics.tiktok.com/i18n/pixel/events.js";
-        ttq._i=ttq._i||{{}};
-        ttq._i[e]=[];
-        ttq._i[e]._u=i;
-        ttq._t=ttq._t||{{}};
-        ttq._t[e]=+new Date;
-        ttq._o=ttq._o||{{}};
-        ttq._o[e]=n||{{}};
-        var o=document.createElement("script");
-        o.type="text/javascript";
-        o.async=!0;
-        o.src=i+"?sdkid="+e+"&lib="+t;
-        var a=document.getElementsByTagName("script")[0];
-        a.parentNode.insertBefore(o,a);
-    }};
-    ttq.load('{pixel_id}');
-    ttq.page();
+  w.TiktokAnalyticsObject=t;
+  var ttq=w[t]=w[t]||[];
+  ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"];
+  ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};
+  for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);
+  ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}};
+  ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
+  ttq.load('{pixel_id}');
+  ttq.page();
 }}(window, document, 'ttq');
 </script>
-"""
+'''
+    else:
+        # ユーザーが提供したピクセルコードの処理
+        if '<script' in pixel_code.lower() and '</script>' in pixel_code.lower():
+            # スクリプトタグを含む場合は直接使用（簡易的なXSS対策）
+            # scriptタグのみを抽出して使用
+            match = re.search(r'(<script[\s\S]*?</script>)', pixel_code, re.IGNORECASE)
+            if match:
+                script = match.group(1)
+            else:
+                script = ''  # マッチしない場合は空にする
+        else:
+            # スクリプトタグがない場合はIDとして扱う
+            # 安全のためIDに使えない文字を削除
+            pixel_id = re.sub(r'[^A-Za-z0-9]', '', pixel_code)
+            script = f'''
+<script>
+!function (w, d, t) {{
+  w.TiktokAnalyticsObject=t;
+  var ttq=w[t]=w[t]||[];
+  ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"];
+  ttq.setAndDefer=function(t,e){{t[e]=function(){{t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};}};
+  for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);
+  ttq.instance=function(t){{for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e}};
+  ttq.load=function(e,n){{var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{{}},ttq._i[e]=[],ttq._i[e]._u=i,ttq._t=ttq._t||{{}},ttq._t[e]=+new Date,ttq._o=ttq._o||{{}},ttq._o[e]=n||{{}};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)}};
+  ttq.load('{pixel_id}');
+  ttq.page();
+}}(window, document, 'ttq');
+</script>
+'''
+    
+    app.logger.info(f"最終ピクセルスクリプト: {script[:100]}...")
+    return script
 
 @app.route('/view/<file_id>')
 def view(file_id):
@@ -851,10 +823,6 @@ def view(file_id):
         
         # クリック数を更新
         update_click_count(file_id)
-        
-        # YouTubeコンテンツの場合は特別な処理をしない
-        if target_url.get('youtube'):
-            return html_content
         
         # HTML charset指定の確認
         if 'charset=' not in html_content:
