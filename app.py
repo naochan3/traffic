@@ -55,17 +55,11 @@ if not DEBUG:
     file_handler.setLevel(logging.INFO)
     app.logger.addHandler(file_handler)
 
-# Vercel KV/Blobストレージのサポート
+# Vercel Blob/KVストレージのサポート
 try:
-    app.logger.info("Vercel Blob/KV関連モジュールのインポートを試みます")
+    app.logger.info("Vercel Blobモジュールのインポートを試みます")
     app.logger.info(f"Pythonバージョン: {sys.version}")
     app.logger.info(f"sys.path: {sys.path}")
-    
-    try:
-        import vercel_kv
-        app.logger.info(f"vercel_kv バージョン: {vercel_kv.__version__ if hasattr(vercel_kv, '__version__') else '不明'}")
-    except ImportError as e:
-        app.logger.error(f"vercel_kv インポートエラー: {str(e)}")
     
     try:
         import vercel_blob
@@ -73,17 +67,12 @@ try:
     except ImportError as e:
         app.logger.error(f"vercel_blob インポートエラー: {str(e)}")
     
-    from vercel_kv import VercelKV
     from vercel_blob import put, get, list, del_
     
     # 環境変数の確認
     app.logger.info(f"VERCEL環境変数: {os.environ.get('VERCEL')}")
-    kv_url = os.environ.get('KV_REST_API_URL')
-    kv_token = os.environ.get('KV_REST_API_TOKEN')
     blob_token = os.environ.get('BLOB_READ_WRITE_TOKEN')
     
-    app.logger.info(f"KV_REST_API_URL設定: {'有効 (長さ:' + str(len(kv_url)) + ')' if kv_url else '未設定'}")
-    app.logger.info(f"KV_REST_API_TOKEN設定: {'有効 (長さ:' + str(len(kv_token)) + ')' if kv_token else '未設定'}")
     app.logger.info(f"BLOB_READ_WRITE_TOKEN設定: {'有効 (長さ:' + str(len(blob_token)) + ')' if blob_token else '未設定'}")
 
     # トークンの有効性をさらに詳細にチェック
@@ -93,72 +82,77 @@ try:
         else:
             app.logger.info("BLOB_READ_WRITE_TOKENの形式は正常と思われます")
     
-    # KV Storeへの接続
-    kv = VercelKV() if kv_url and kv_token else None
+    # KV Storeへの接続 - 使用しない
+    kv = None
     
     # Blob機能のラッパー関数
     async def blob_put(key, data):
-        if os.environ.get('BLOB_READ_WRITE_TOKEN'):
-            try:
-                app.logger.info(f"Blobストレージにファイルを保存: {key} (サイズ: {len(data) if data else 0}バイト)")
-                result = await put(key, data, {'access': 'public'})
-                app.logger.info(f"Blob保存結果: {result.url if result else 'None'}")
-                return result.url
-            except Exception as e:
-                app.logger.error(f"Blobストレージエラー (put): {str(e)}")
-                return None
-        else:
-            app.logger.error("BLOB_READ_WRITE_TOKENが設定されていません")
+        """Blobストレージにデータを格納する"""
+        try:
+            url = await put(key, data, {"access": "public"})
+            return url
+        except Exception as e:
+            app.logger.error(f"Blobストレージエラー (put): {str(e)}")
             return None
-        
+            
     async def blob_get(url):
-        if os.environ.get('BLOB_READ_WRITE_TOKEN'):
-            try:
-                result = await get(url)
-                if result and hasattr(result, 'text'):
-                    return await result.text()
-                return None
-            except Exception as e:
-                app.logger.error(f"Blobストレージエラー (get): {str(e)}")
-                return None
-        return None
-        
+        """Blobストレージからデータを取得する"""
+        try:
+            return await get(url)
+        except Exception as e:
+            app.logger.error(f"Blobストレージエラー (get): {str(e)}")
+            return None
+            
     async def blob_delete(url):
-        if os.environ.get('BLOB_READ_WRITE_TOKEN'):
-            try:
+        """Blobストレージからデータを削除する"""
+        try:
+            if url:
                 await del_(url)
                 return True
-            except Exception as e:
-                app.logger.error(f"Blobストレージエラー (delete): {str(e)}")
-                return False
-        return False
-        
+            return False
+        except Exception as e:
+            app.logger.error(f"Blobストレージエラー (delete): {str(e)}")
+            return False
+    
+    # KV関数（互換性のためにダミー関数を提供）
     async def kv_get(key):
-        if kv:
-            try:
-                return await kv.get(key)
-            except Exception as e:
-                app.logger.error(f"KVストレージエラー (get): {str(e)}")
-                return None
-        return None
-        
+        """ファイルシステムからデータを取得する代替実装"""
+        try:
+            file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", f"{key}.json")
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    return json.load(f)
+            return None
+        except Exception as e:
+            app.logger.error(f"ファイル読み込みエラー: {str(e)}")
+            return None
+                
     async def kv_set(key, value):
-        if kv:
-            try:
-                return await kv.set(key, value)
-            except Exception as e:
-                app.logger.error(f"KVストレージエラー (set): {str(e)}")
-                return False
-        return False
+        """ファイルシステムにデータを保存する代替実装"""
+        try:
+            file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", f"{key}.json")
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            with open(file_path, 'w') as f:
+                json.dump(value, f)
+            return True
+        except Exception as e:
+            app.logger.error(f"ファイル保存エラー: {str(e)}")
+            return False
                 
     async def kv_delete(key):
-        if kv:
-            try:
-                return await kv.delete(key)
-            except Exception as e:
-                app.logger.error(f"KVストレージエラー (delete): {str(e)}")
-                return False
-        return False
+        """ファイルシステムからデータを削除する代替実装"""
+        try:
+            file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", f"{key}.json")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                return True
+            return False
+        except Exception as e:
+            app.logger.error(f"ファイル削除エラー: {str(e)}")
+            return False
         
     # 非同期関数を実行するヘルパー
     def run_async(coroutine):
@@ -182,10 +176,10 @@ try:
             app.logger.error(f"coroutine実行中のエラー: {str(e)}")
             return None
         
-    app.logger.info("Vercel KV/Blobストレージが利用可能です")
+    app.logger.info("Vercel Blobストレージが利用可能です")
 except ImportError as e:
     # KV/Blob機能が利用できない場合は、ダミー関数を提供
-    app.logger.error(f"Vercel KV/Blobストレージのインポートに失敗: {str(e)}")
+    app.logger.error(f"Vercel Blobストレージのインポートに失敗: {str(e)}")
     app.logger.warning("互換性のためのダミー関数を提供します")
     kv = None
     
@@ -210,7 +204,7 @@ except ImportError as e:
     def run_async(coroutine):
         return None
 except Exception as e:
-    app.logger.error(f"Vercel KV/Blobストレージ初期化エラー: {str(e)}")
+    app.logger.error(f"Vercel Blobストレージ初期化エラー: {str(e)}")
     kv = None
     
     async def blob_put(key, data):
