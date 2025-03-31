@@ -77,9 +77,9 @@ if not os.path.exists(URL_LIST_FILE):
         # /tmpディレクトリが存在することを確認
         os.makedirs(os.path.dirname(URL_LIST_FILE), exist_ok=True)
         # 空のURLリストファイルを作成
-    with open(URL_LIST_FILE, 'w') as f:
-        json.dump([], f)
-        app.logger.info(f"新しいURLリストファイルを作成しました: {URL_LIST_FILE}")
+        with open(URL_LIST_FILE, 'w') as f:
+            json.dump([], f)
+            app.logger.info(f"新しいURLリストファイルを作成しました: {URL_LIST_FILE}")
     except Exception as e:
         app.logger.error(f"URLリストファイルの初期化に失敗: {str(e)}")
 
@@ -297,8 +297,8 @@ def get_url_list():
                     # /tmpディレクトリが存在することを確認
                     os.makedirs(os.path.dirname(URL_LIST_FILE), exist_ok=True)
                     # 空のURLリストファイルを作成
-            with open(URL_LIST_FILE, 'w') as f:
-                json.dump([], f)
+                    with open(URL_LIST_FILE, 'w') as f:
+                        json.dump([], f)
                     app.logger.info(f"新しいURLリストファイルを作成しました: {URL_LIST_FILE}")
                 except Exception as e:
                     app.logger.warning(f"新しいURLリストファイル作成に失敗: {str(e)}")
@@ -335,8 +335,8 @@ def save_url_list(url_list):
                 # tmpディレクトリに保存を試みる
                 try:
                     os.makedirs(os.path.dirname(URL_LIST_FILE), exist_ok=True)
-        with open(URL_LIST_FILE, 'w') as f:
-            json.dump(url_list, f)
+                    with open(URL_LIST_FILE, 'w') as f:
+                        json.dump(url_list, f)
                     app.logger.info(f"URLリストをtmpディレクトリに保存しました: {URL_LIST_FILE}")
                     file_saved = True
                 except Exception as tmp_err:
